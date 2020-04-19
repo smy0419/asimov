@@ -1,0 +1,36 @@
+# Temp files
+*.o
+*.a
+*.so
+
+# log
+*.log
+
+# idea
+.idea
+
+# Mac
+*.DS_Store
+
+# VS Code
+.vscode
+vvs-core
+
+pack.sh
+asimov
+asimovd
+asimovnode_*.zip
+md5.md
+wallet
+
+*.out
+*.dat
+
+node_modules
+target
+database/test/testdata
+
+rpc.cert
+rpc.key
+
+bin/*

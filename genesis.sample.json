@@ -1,0 +1,5 @@
+{
+  # 204 for devnet, 1636614 for testnet
+  "collectHeight":204,
+  "chainStartTime":1576221900
+}

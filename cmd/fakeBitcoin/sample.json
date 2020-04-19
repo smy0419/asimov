@@ -1,0 +1,41 @@
+{
+    "hash": "0000007f1d08b1d1b712a1bfd2ad33458843eeea9ab2f5c34f281bb53730f219",
+    "height": 10262,
+    "address": "mqLKvNuKrArWcXB8aoN6jSyjHvwTXPmvpr",
+    "pool": "HotPool",
+    "time": 1574766752,
+    "validatorTxs": [
+      {
+        "vin": [
+          "mvLhjerWCSbf5Qyzou2zvehFqQXyY2skP7"
+        ],
+        "outAddress": "c5201b984adf756a731557cb8c70de2ab63be9e8",
+        "addressType": 1,
+        "txid": "7501d64f5f3a8544a9acaffb3bc461912552920ac3c8516eccfec346ec86f2e5"
+      },
+      {
+        "vin": [
+          "mqLKvNuKrArWcXB8aoN6jSyjHvwTXPmvpr"
+        ],
+        "outAddress": "c03e98c7fef0f04aaa546e4491a2a452eb4acbb2",
+        "addressType": 1,
+        "txid": "7d3e8da4971b724a9808a97b19978a2c375f1a4ca320380c0a0c069a8d7fd285"
+      },
+      {
+        "vin": [
+          "n1zBZ4W7av1UYiHMmygizfDVwFx2CsAwRV"
+        ],
+        "outAddress": "73e3d620dc4be4d5d99b08d1ccf810c58c11d88b",
+        "addressType": 1,
+        "txid": "bc4316aea7fa0af6f88ac2d05d51b679fd67a51e28d8dc412cfbafe2ac4b2454"
+      },
+      {
+        "vin": [
+          "n3yaZW1TNgn68o814ZChCV9jjuimg7EKSy"
+        ],
+        "outAddress": "f0924de66fd3fcadc4664f3e9c7111fd972f4b82",
+        "addressType": 1,
+        "txid": "6c902ffd59fa37f1344914b5f5b3f60ac99db63e19061aa2e7bb3ecd3a121c0c"
+      }
+    ]
+}

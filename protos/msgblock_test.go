@@ -1,0 +1,569 @@
+// Copyright (c) 2018-2020 The asimov developers
+// Copyright (c) 2013-2017 The btcsuite developers
+// Use of this source code is governed by an ISC
+// license that can be found in the LICENSE file.
+
+package protos
+
+import (
+	"bytes"
+	"github.com/AsimovNetwork/asimov/common"
+	"io"
+	"reflect"
+	"testing"
+)
+
+// TestBlockWire tests the MsgBlock protos encode and decode for various numbers
+// of transaction inputs and outputs and protocol versions.
+func TestBlockWire(t *testing.T) {
+	tests := []struct {
+		in     *MsgBlock       // Message to encode
+		out    *MsgBlock       // Expected decoded message
+		buf    []byte          // Wire encoding
+		pver   uint32          // Protocol version for protos encoding
+		enc    MessageEncoding // Message encoding format
+	}{
+		// Latest protocol version.
+		{
+			&blockOne,
+			&blockOne,
+			blockOneBytes,
+			common.ProtocolVersion,
+			BaseEncoding,
+		},
+	}
+
+	t.Logf("Running %d tests", len(tests))
+	for i, test := range tests {
+		// Encode the message to protos format.
+		var buf bytes.Buffer
+		err := test.in.VVSEncode(&buf, test.pver, test.enc)
+		if err != nil {
+			t.Errorf("VVSEncode #%d error %v", i, err)
+			continue
+		}
+		if !bytes.Equal(buf.Bytes(), test.buf) {
+			t.Errorf("VVSEncode #%d\n got: %v\n want: %v\n", i,
+				buf.Bytes(), test.buf)
+			continue
+		}
+
+		// Decode the message from protos format.
+		var msg MsgBlock
+		rbuf := bytes.NewReader(test.buf)
+		err = msg.VVSDecode(rbuf, test.pver, test.enc)
+		if err != nil {
+			t.Errorf("VVSDecode #%d error %v", i, err)
+			continue
+		}
+		if !reflect.DeepEqual(&msg, test.out) {
+			t.Errorf("VVSDecode #%d\n got: %v\n want: %v\n", i,
+				&msg, test.out)
+			continue
+		}
+	}
+}
+
+// TestBlockWireErrors performs negative tests against protos encode and decode
+// of MsgBlock to confirm error paths work correctly.
+func TestBlockWireErrors(t *testing.T) {
+	// Use protocol version 60002 specifically here instead of the latest
+	// because the test data is using bytes encoded with that protocol
+	// version.
+	pver := uint32(0)
+
+	tests := []struct {
+		in       *MsgBlock       // Value to encode
+		buf      []byte          // Wire encoding
+		pver     uint32          // Protocol version for protos encoding
+		enc      MessageEncoding // Message encoding format
+		max      int             // Max size of fixed buffer to induce errors
+		writeErr error           // Expected write error
+		readErr  error           // Expected read error
+	}{
+		// Force error in version.
+		{&blockOne, blockOneBytes, pver, BaseEncoding, 0, io.ErrShortWrite, io.EOF},  //4 byte
+		// Force error in prev block hash.
+		{&blockOne, blockOneBytes, pver, BaseEncoding, 4, io.ErrShortWrite, io.EOF},  //32 byte
+		// Force error in merkle root.
+		{&blockOne, blockOneBytes, pver, BaseEncoding, 36, io.ErrShortWrite, io.EOF}, //32 byte
+		// Force error in timestamp.
+		{&blockOne, blockOneBytes, pver, BaseEncoding, 68, io.ErrShortWrite, io.EOF}, //8 byte
+		// Force error in stateRoot.
+		{&blockOne, blockOneBytes, pver, BaseEncoding, 76, io.ErrShortWrite, io.EOF}, //32 byte
+		// Force error in gas limit.
+		{&blockOne, blockOneBytes, pver, BaseEncoding, 108, io.ErrShortWrite, io.EOF}, //8 byte
+		// Force error in gas used.
+		{&blockOne, blockOneBytes, pver, BaseEncoding, 116, io.ErrShortWrite, io.EOF}, //8 byte
+		// Force error in Round.
+		{&blockOne, blockOneBytes, pver, BaseEncoding, 124, io.ErrShortWrite, io.EOF}, //4 byte
+		// Force error in SlotIndex.
+		{&blockOne, blockOneBytes, pver, BaseEncoding, 128, io.ErrShortWrite, io.EOF}, //2 byte
+		// Force error in weight.
+		{&blockOne, blockOneBytes, pver, BaseEncoding, 130, io.ErrShortWrite, io.EOF}, //2 byte
+		//Force error in PoaHash
+		{&blockOne, blockOneBytes, pver, BaseEncoding, 132, io.ErrShortWrite, io.EOF}, //32 byte
+		//Force error in height
+		{&blockOne, blockOneBytes, pver, BaseEncoding, 164, io.ErrShortWrite, io.EOF}, //4 byte
+		//Force error in coinbaseAddr
+		{&blockOne, blockOneBytes, pver, BaseEncoding, 168, io.ErrShortWrite, io.EOF}, //21 byte
+		//Force error in signature
+		{&blockOne, blockOneBytes, pver, BaseEncoding, 189, io.ErrShortWrite, io.EOF}, //65 byte
+		// Force error in transactions.
+		{&blockOne, blockOneBytes, pver, BaseEncoding, 254, io.ErrShortWrite, io.EOF},
+	}
+
+	t.Logf("Running %d tests", len(tests))
+	for i, test := range tests {
+		// Encode to protos format.
+		w := newFixedWriter(test.max)
+		err := test.in.VVSEncode(w, test.pver, test.enc)
+		if err != test.writeErr {
+			t.Errorf("VVSEncode #%d wrong error got: %v, want: %v",
+				i, err, test.writeErr)
+			continue
+		}
+
+		// Decode from protos format.
+		var msg MsgBlock
+		r := newFixedReader(test.max, test.buf)
+		err = msg.VVSDecode(r, test.pver, test.enc)
+		if err != test.readErr {
+			t.Errorf("VVSDecode #%d wrong error got: %v, want: %v",
+				i, err, test.readErr)
+			continue
+		}
+	}
+}
+
+// TestBlockSerialize tests MsgBlock serialize and deserialize.
+func TestBlockSerialize(t *testing.T) {
+	tests := []struct {
+		in     *MsgBlock // Message to encode
+		out    *MsgBlock // Expected decoded message
+		buf    []byte    // Serialized data
+		txLocs []TxLoc   // Expected transaction locations
+	}{
+		{
+			&blockOne,
+			&blockOne,
+			blockOneBytes,
+			blockOneTxLocs,
+		},
+	}
+
+	t.Logf("Running %d tests", len(tests))
+	for i, test := range tests {
+		// Serialize the block.
+		var buf bytes.Buffer
+		err := test.in.Serialize(&buf)
+		if err != nil {
+			t.Errorf("Serialize #%d error %v", i, err)
+			continue
+		}
+		if !bytes.Equal(buf.Bytes(), test.buf) {
+			t.Errorf("Serialize #%d\n got: %v want: %v", i,
+				buf.Bytes(), test.buf)
+			continue
+		}
+
+		var block MsgBlock
+		rbuf := bytes.NewReader(test.buf)
+		err = block.Deserialize(rbuf)
+		if err != nil {
+			t.Errorf("Deserialize #%d error %v", i, err)
+			continue
+		}
+		if !reflect.DeepEqual(&block, test.out) {
+			t.Errorf("Deserialize #%d\n got: %v want: %v", i,
+				&block, test.out)
+			continue
+		}
+
+		// Deserialize the block while gathering transaction location
+		// information.
+		var txLocBlock MsgBlock
+		br := bytes.NewBuffer(test.buf)
+		txLocs, err := txLocBlock.DeserializeTxLoc(br)
+		if err != nil {
+			t.Errorf("DeserializeTxLoc #%d error %v", i, err)
+			continue
+		}
+		if !reflect.DeepEqual(txLocs, test.txLocs) {
+			t.Errorf("DeserializeTxLoc txLocs #%d\n got: %v want: %v", i,
+				txLocs, test.txLocs)
+			continue
+		}
+	}
+}
+
+// TestBlockSerializeErrors performs negative tests against protos encode and
+// decode of MsgBlock to confirm error paths work correctly.
+func TestBlockSerializeErrors(t *testing.T) {
+	tests := []struct {
+		in       *MsgBlock // Value to encode
+		buf      []byte    // Serialized data
+		max      int       // Max size of fixed buffer to induce errors
+		writeErr error     // Expected write error
+		readErr  error     // Expected read error
+	}{
+		// Force error in version.
+		{&blockOne, blockOneBytes, 0, io.ErrShortWrite, io.EOF},  //4 byte
+		// Force error in prev block hash.
+		{&blockOne, blockOneBytes, 4, io.ErrShortWrite, io.EOF},  //32 byte
+		// Force error in merkle root.
+		{&blockOne, blockOneBytes, 36, io.ErrShortWrite, io.EOF}, //32 byte
+		// Force error in timestamp.
+		{&blockOne, blockOneBytes, 68, io.ErrShortWrite, io.EOF}, //8 byte
+		// Force error in stateRoot.
+		{&blockOne, blockOneBytes, 76, io.ErrShortWrite, io.EOF}, //32 byte
+		// Force error in gas limit.
+		{&blockOne, blockOneBytes, 108, io.ErrShortWrite, io.EOF}, //8 byte
+		// Force error in gas used.
+		{&blockOne, blockOneBytes, 116, io.ErrShortWrite, io.EOF}, //8 byte
+		// Force error in Round.
+		{&blockOne, blockOneBytes, 124, io.ErrShortWrite, io.EOF}, //4 byte
+		// Force error in SlotIndex.
+		{&blockOne, blockOneBytes, 128, io.ErrShortWrite, io.EOF}, //2 byte
+		// Force error in weight.
+		{&blockOne, blockOneBytes, 130, io.ErrShortWrite, io.EOF}, //2 byte
+		//Force error in PoaHash
+		{&blockOne, blockOneBytes, 132, io.ErrShortWrite, io.EOF}, //32 byte
+		//Force error in height
+		{&blockOne, blockOneBytes, 164, io.ErrShortWrite, io.EOF}, //4 byte
+		//Force error in coinbaseAddr
+		{&blockOne, blockOneBytes, 168, io.ErrShortWrite, io.EOF}, //21 byte
+		//Force error in signature
+		{&blockOne, blockOneBytes, 189, io.ErrShortWrite, io.EOF}, //65 byte
+		// Force error in transactions.
+		{&blockOne, blockOneBytes, 254, io.ErrShortWrite, io.EOF},
+	}
+
+	t.Logf("Running %d tests", len(tests))
+	for i, test := range tests {
+		// Serialize the block.
+		w := newFixedWriter(test.max)
+		err := test.in.Serialize(w)
+		if err != test.writeErr {
+			t.Errorf("Serialize #%d wrong error got: %v, want: %v",
+				i, err, test.writeErr)
+			continue
+		}
+
+		// Deserialize the block.
+		var block MsgBlock
+		r := newFixedReader(test.max, test.buf)
+		err = block.Deserialize(r)
+		if err != test.readErr {
+			t.Errorf("Deserialize #%d wrong error got: %v, want: %v",
+				i, err, test.readErr)
+			continue
+		}
+
+		var txLocBlock MsgBlock
+		br := bytes.NewBuffer(test.buf[0:test.max])
+		_, err = txLocBlock.DeserializeTxLoc(br)
+		if err != test.readErr {
+			t.Errorf("DeserializeTxLoc #%d wrong error got: %v, want: %v",
+				i, err, test.readErr)
+			continue
+		}
+	}
+}
+
+// TestBlockOverflowErrors  performs tests to ensure deserializing blocks which
+// are intentionally crafted to use large values for the number of transactions
+// are handled properly.  This could otherwise potentially be used as an attack
+// vector.
+func TestBlockOverflowErrors(t *testing.T) {
+	// Use protocol version 70001 specifically here instead of the latest
+	// protocol version because the test data is using bytes encoded with
+	// that version.
+	pver := uint32(70001)
+
+	tests := []struct {
+		buf  []byte          // Wire encoding
+		pver uint32          // Protocol version for protos encoding
+		enc  MessageEncoding // Message encoding format
+		err  error           // Expected error
+	}{
+		// Block that claims to have ~uint64(0) transactions.
+		{
+			[]byte{
+				0x01, 0x00, 0x00, 0x00, // Version 1
+				0x6f, 0xe2, 0x8c, 0x0a, 0xb6, 0xf1, 0xb3, 0x72,
+				0xc1, 0xa6, 0xa2, 0x46, 0xae, 0x63, 0xf7, 0x4f,
+				0x93, 0x1e, 0x83, 0x65, 0xe1, 0x5a, 0x08, 0x9c,
+				0x68, 0xd6, 0x19, 0x00, 0x00, 0x00, 0x00, 0x00, // PrevBlock
+				0x3b, 0xa3, 0xed, 0xfd, 0x7a, 0x7b, 0x12, 0xb2,
+				0x7a, 0xc7, 0x2c, 0x3e, 0x67, 0x76, 0x8f, 0x61,
+				0x7f, 0xc8, 0x1b, 0xc3, 0x88, 0x8a, 0x51, 0x32,
+				0x3a, 0x9f, 0xb8, 0xaa, 0x4b, 0x1e, 0x5e, 0x4a, // MerkleRoot
+				0x29, 0xab, 0x5f, 0x49, 0x00, 0x00, 0x00, 0x00, // Timestamp
+				0x6f, 0xe2, 0x8c, 0x0a, 0xb6, 0xf1, 0xb3, 0x72,
+				0xc1, 0xa6, 0xa2, 0x46, 0xae, 0x63, 0xf7, 0x4f,
+				0x7f, 0xc8, 0x1b, 0xc3, 0x88, 0x8a, 0x51, 0x32,
+				0x3a, 0x9f, 0xb8, 0xaa, 0x4b, 0x1e, 0x5e, 0x4a, // StateRoot
+				0x80, 0x96, 0x98, 0x00, 0x00, 0x00, 0x00, 0x00, // GasLimit
+				0x40, 0x54, 0x89, 0x00, 0x00, 0x00, 0x00, 0x00, // GasUsed
+				0x01, 0x00, 0x00, 0x00, // Round
+				0x02, 0x00, // SlotIndex
+				0x03, 0x00, // Weight
+				0x12, 0x34, 0x56, 0x78, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // PoaHash
+				0x01, 0x00, 0x00, 0x00, // height
+				0x66, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, // coinbase
+				//SigData:
+				0x63, 0xe3, 0x83, 0x03, 0xb3, 0xf3, 0xb3, 0x73, 0x83,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x0f, // TxnCount
+			}, pver, BaseEncoding, io.EOF,
+		},
+	}
+
+	t.Logf("Running %d tests", len(tests))
+	for i, test := range tests {
+		// Decode from protos format.
+		var msg MsgBlock
+		r := bytes.NewReader(test.buf)
+		err := msg.VVSDecode(r, test.pver, test.enc)
+		if reflect.TypeOf(err) != reflect.TypeOf(test.err) {
+			t.Errorf("VVSDecode #%d wrong error got: %v, want: %v",
+				i, err, reflect.TypeOf(test.err))
+			continue
+		}
+
+		// Deserialize from protos format.
+		r = bytes.NewReader(test.buf)
+		err = msg.Deserialize(r)
+		if reflect.TypeOf(err) != reflect.TypeOf(test.err) {
+			t.Errorf("Deserialize #%d wrong error got: %v, want: %v",
+				i, err, reflect.TypeOf(test.err))
+			continue
+		}
+
+		// Deserialize with transaction location info from protos format.
+		br := bytes.NewBuffer(test.buf)
+		_, err = msg.DeserializeTxLoc(br)
+		if reflect.TypeOf(err) != reflect.TypeOf(test.err) {
+			t.Errorf("DeserializeTxLoc #%d wrong error got: %v, "+
+				"want: %v", i, err, reflect.TypeOf(test.err))
+			continue
+		}
+	}
+}
+
+// TestBlockSerializeSize performs tests to ensure the serialize size for
+// various blocks is accurate.
+func TestBlockSerializeSize(t *testing.T) {
+	// Block with no transactions.
+	noTxBlock := NewMsgBlock(&blockOne.Header)
+
+	tests := []struct {
+		in   *MsgBlock // Block to encode
+		size int       // Expected serialized size
+	}{
+		// Block with no transactions.
+		{noTxBlock, 545},
+
+		// First block in the mainnet block chain.
+		{&blockOne, len(blockOneBytes)},
+	}
+
+	t.Logf("Running %d tests", len(tests))
+	for i, test := range tests {
+		serializedSize := test.in.SerializeSize()
+		if serializedSize != test.size {
+			t.Errorf("MsgBlock.SerializeSize: #%d got: %d, want: "+
+				"%d", i, serializedSize, test.size)
+			continue
+		}
+	}
+}
+
+// Block one serialized bytes.
+var blockOneBytes = []byte{
+	0x01, 0x00, 0x00, 0x00, // Version 1
+	0x6f, 0xe2, 0x8c, 0x0a, 0xb6, 0xf1, 0xb3, 0x72,
+	0xc1, 0xa6, 0xa2, 0x46, 0xae, 0x63, 0xf7, 0x4f,
+	0x93, 0x1e, 0x83, 0x65, 0xe1, 0x5a, 0x08, 0x9c,
+	0x68, 0xd6, 0x19, 0x00, 0x00, 0x00, 0x00, 0x00, // PrevBlock
+	0x3b, 0xa3, 0xed, 0xfd, 0x7a, 0x7b, 0x12, 0xb2,
+	0x7a, 0xc7, 0x2c, 0x3e, 0x67, 0x76, 0x8f, 0x61,
+	0x7f, 0xc8, 0x1b, 0xc3, 0x88, 0x8a, 0x51, 0x32,
+	0x3a, 0x9f, 0xb8, 0xaa, 0x4b, 0x1e, 0x5e, 0x4a, // MerkleRoot
+	0x29, 0xab, 0x5f, 0x49, 0x00, 0x00, 0x00, 0x00, // Timestamp
+	0x6f, 0xe2, 0x8c, 0x0a, 0xb6, 0xf1, 0xb3, 0x72,
+	0xc1, 0xa6, 0xa2, 0x46, 0xae, 0x63, 0xf7, 0x4f,
+	0x7f, 0xc8, 0x1b, 0xc3, 0x88, 0x8a, 0x51, 0x32,
+	0x3a, 0x9f, 0xb8, 0xaa, 0x4b, 0x1e, 0x5e, 0x4a, // StateRoot
+	0x80, 0x96, 0x98, 0x00, 0x00, 0x00, 0x00, 0x00, // GasLimit
+	0x40, 0x54, 0x89, 0x00, 0x00, 0x00, 0x00, 0x00, // GasUsed
+	0x01, 0x00, 0x00, 0x00, // Round
+	0x02, 0x00, // SlotIndex
+	0x03, 0x00, // Weight
+	0x12, 0x34, 0x56, 0x78, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // PoaHash
+	0x01, 0x00, 0x00, 0x00, // height
+	0x66, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, // coinbase
+	//SigData:
+	0x63, 0xe3, 0x83, 0x03, 0xb3, 0xf3, 0xb3, 0x73, 0x83,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	// receipt hash
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	// bloom
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x01,                   // TxnCount
+	0x01, 0x00, 0x00, 0x00, // Version
+	0x01, // Varint for number of transaction inputs
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Previous output hash
+	0xff, 0xff, 0xff, 0xff, // Prevous output index
+	0x07,                                     // Varint for length of signature script
+	0x04, 0xff, 0xff, 0x00, 0x1d, 0x01, 0x04, // Signature script (coinbase)
+	0xff, 0xff, 0xff, 0xff, // Sequence
+	0x01,                                           // Varint for number of transaction outputs
+	0x00, 0xf2, 0x05, 0x2a, 0x01, 0x00, 0x00, 0x00, // Transaction amount
+	0x43, // Varint for length of pk script
+	0x41, // OP_DATA_65
+	0x04, 0x96, 0xb5, 0x38, 0xe8, 0x53, 0x51, 0x9c,
+	0x72, 0x6a, 0x2c, 0x91, 0xe6, 0x1e, 0xc1, 0x16,
+	0x00, 0xae, 0x13, 0x90, 0x81, 0x3a, 0x62, 0x7c,
+	0x66, 0xfb, 0x8b, 0xe7, 0x94, 0x7b, 0xe6, 0x3c,
+	0x52, 0xda, 0x75, 0x89, 0x37, 0x95, 0x15, 0xd4,
+	0xe0, 0xa6, 0x04, 0xf8, 0x14, 0x17, 0x81, 0xe6,
+	0x22, 0x94, 0x72, 0x11, 0x66, 0xbf, 0x62, 0x1e,
+	0x73, 0xa8, 0x2c, 0xbf, 0x23, 0x42, 0xc8, 0x58,
+	0xee,                   // 65-byte uncompressed public key
+	0xac,                   // OP_CHECKSIG
+	0x0c, //asset length
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,0x00, 0x00, 0x00, 0x00, //asset
+	0x00, //Data
+	0x00, 0x00, 0x00, 0x00,//TxContract
+	0x00, 0x00, 0x00, 0x00, //LockTime
+	0x00, //MsgBlockSign
+    0x00, //BlockHeader
+}
+
+
+
+// Transaction location information for block one transactions.
+var blockOneTxLocs = []TxLoc{
+	{TxStart: 543, TxLen: 152},
+}
+
+var blockOne = MsgBlock{
+	Header: BlockHeader{
+		Version:       1,
+		PrevBlock:     mainNetGenesisHash,
+		MerkleRoot:    mainNetGenesisMerkleRoot,
+		Timestamp:     0x495fab29, // 2009-01-03 12:15:05 -0600 CST
+		StateRoot:     mainNetStateHash,
+		GasLimit:      10000000,
+		GasUsed:       9000000,
+		Round:         1,
+		SlotIndex:     2,
+		Weight:        3,
+		PoaHash:       common.Hash{0x12,0x34,0x56,0x78,},
+		Height:        1,
+		CoinBase:      [21]byte{0x66},
+		SigData:       [65]byte{0x63, 0xe3, 0x83, 0x03, 0xb3, 0xf3, 0xb3, 0x73, 0x83},
+	},
+	Transactions: []*MsgTx{
+		{
+			Version: 1,
+			TxIn: []*TxIn{
+				{
+					PreviousOutPoint: OutPoint{
+						Hash:  common.Hash{},
+						Index: 0xffffffff,
+					},
+					SignatureScript: []byte{
+						0x04, 0xff, 0xff, 0x00, 0x1d, 0x01, 0x04,
+					},
+					Sequence: 0xffffffff,
+				},
+			},
+			TxOut: []*TxOut{
+				{
+					Value: 0x12a05f200,
+					PkScript: []byte{
+						0x41, // OP_DATA_65
+						0x04, 0x96, 0xb5, 0x38, 0xe8, 0x53, 0x51, 0x9c,
+						0x72, 0x6a, 0x2c, 0x91, 0xe6, 0x1e, 0xc1, 0x16,
+						0x00, 0xae, 0x13, 0x90, 0x81, 0x3a, 0x62, 0x7c,
+						0x66, 0xfb, 0x8b, 0xe7, 0x94, 0x7b, 0xe6, 0x3c,
+						0x52, 0xda, 0x75, 0x89, 0x37, 0x95, 0x15, 0xd4,
+						0xe0, 0xa6, 0x04, 0xf8, 0x14, 0x17, 0x81, 0xe6,
+						0x22, 0x94, 0x72, 0x11, 0x66, 0xbf, 0x62, 0x1e,
+						0x73, 0xa8, 0x2c, 0xbf, 0x23, 0x42, 0xc8, 0x58,
+						0xee, // 65-byte signature
+						0xac, // OP_CHECKSIG
+					},
+					Assets: Assets{0,0},
+					Data:   []byte{},
+				},
+			},
+			TxContract:TxContract{0},
+			LockTime: 0,
+		},
+	},
+	PreBlockSigs:[]*MsgBlockSign{},
+	ReportHeaders:[]*BlockHeader{},
+}
