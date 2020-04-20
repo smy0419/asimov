@@ -21,7 +21,7 @@ asimov
 asimovd
 asimovnode_*.zip
 md5.md
-wallet
+./wallet
 
 *.out
 *.dat
