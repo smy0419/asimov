@@ -166,7 +166,7 @@ func createChainState() common.Hash {
 	}
 
 	chainConfig := &params.ChainConfig{
-		ChainID: big.NewInt(1),
+		ChainID: big.NewInt(0),
 		Ethash:  new(params.EthashConfig),
 	}
 	vmenv := vm.NewFVM(context, statedb, chainConfig, vm.Config{})
@@ -200,14 +200,14 @@ func main() {
 		panic(err)
 	}
 	pwdArray := strings.Split(pwd, "/")
-	if pwdArray[len(pwdArray)-1] != "vvs-core" {
-		panic(errors.New("set work directory to vvs-core"))
+	if pwdArray[len(pwdArray)-1] != "asimov" {
+		panic(errors.New("set work directory to asimov"))
 	}
 	if len(os.Args) < 2 {
 		panic(errors.New("please set arg of system contract folder"))
 	}
 	systemContractFolder := flag.String("systemContractPath", "", "folder of system contracts."+
-		"\n eg.--systemContractPath ~/go/src/gitlab.asimov.so/vvs/vvs-core/cmd/systemcontracts/files")
+		"\n eg.--systemContractPath ~/go/src/github.com/AsimovNetwork/asimov/systemcontracts/files")
 	flag.Parse()
 	if *systemContractFolder == "" {
 		panic(errors.New("please set arg of system contract folder"))
