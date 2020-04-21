@@ -69,9 +69,6 @@ type Config struct {
 	// utxo view.
 	CalcSequenceLock func(*asiutil.Tx, ainterface.IUtxoViewpoint) (*blockchain.SequenceLock, error)
 
-	// SigCache defines a signature cache to use.
-	//SigCache *txscript.SigCache
-
 	// AddrIndex defines the optional address index instance to use for
 	// indexing the unconfirmed transactions in the memory pool.
 	// This can be nil if the address index is not enabled.

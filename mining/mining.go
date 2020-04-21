@@ -245,7 +245,6 @@ type BlkTmplGenerator struct {
 	txSource     TxSource
 	sigSource    SigSource
 	chain        *blockchain.BlockChain
-	//sigCache   *txscript.SigCache
 
 	nextHeight                int32
 	utxoCache                 ainterface.IUtxoViewpoint

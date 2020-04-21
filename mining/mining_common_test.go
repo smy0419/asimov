@@ -852,7 +852,6 @@ func newFakeChain(paramstmp *chaincfg.Params) (*blockchain.BlockChain, func(), e
 		ChainParams: paramstmp,
 		//Checkpoints:   checkpoints,
 		TimeSource: blockchain.NewMedianTime(),
-		//SigCache:      txscript.NewSigCache(1000),
 		//IndexManager:  indexManager,
 		StateDB: stateDB,
 		//Account:       &acc,
