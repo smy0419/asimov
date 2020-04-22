@@ -71,6 +71,10 @@ type TxSource interface {
 	// MiningDescs returns a slice of mining descriptors for all the
 	// transactions in the source pool.
 	TxDescs() []*TxDesc
+
+	// UpdateForbiddenTxs put given txhashes into forbiddenTxs.
+	// If size of forbiddenTxs exceed limit, clear some olders.
+	UpdateForbiddenTxs(txHashes []*common.Hash, height int64)
 }
 
 type SigSource interface {
@@ -246,9 +250,6 @@ type BlkTmplGenerator struct {
 	sigSource    SigSource
 	chain        *blockchain.BlockChain
 
-	nextHeight                int32
-	utxoCache                 ainterface.IUtxoViewpoint
-
 	FetchUtxoView func(tx *asiutil.Tx, dolock bool) (ainterface.IUtxoViewpoint, error)
 }
 
@@ -266,13 +267,11 @@ func NewBlkTmplGenerator(policy *Policy,
 		txSource:   txSource,
 		sigSource:  sigSource,
 		chain:      chain,
-		nextHeight: int32(0),
-
 		FetchUtxoView: chain.FetchUtxoView,
 	}
 }
 
-// NewBlockTemplate returns a new block template that is ready to be solved
+// ProcessNewBlock returns a new block template that is ready to be solved
 // using the transactions from the passed transaction source pool and a coinbase
 // that either pays to the passed address if it is not nil, or a coinbase that
 // is redeemable by anyone if the passed address is nil.  The nil address
@@ -315,6 +314,7 @@ func (g *BlkTmplGenerator) ProcessNewBlock(account *crypto.Account, gasFloor, ga
 	// choose the initial sort order for the priority queue based on whether
 	// or not there is an area allocated for high-priority transactions.
 	sourceTxns := g.txSource.TxDescs()
+	forbiddenTxHashes := make([]*common.Hash, 0, len(sourceTxns))
 	priorityQueue := NewTxPriorityQueue(len(sourceTxns))
 	txpool := make(map[common.Hash]bool)
 	for _, tx := range sourceTxns {
@@ -322,7 +322,8 @@ func (g *BlkTmplGenerator) ProcessNewBlock(account *crypto.Account, gasFloor, ga
 	}
 
 	// Collect pre blocks sigs
-	totalPreSigns := g.sigSource.MiningDescs(g.chain.GetTip().Height())
+	bestHeight := g.chain.GetTip().Height()
+	totalPreSigns := g.sigSource.MiningDescs(bestHeight)
 
 	ts := time.Now().Unix()
 	payToAddress := account.Address
@@ -336,6 +337,8 @@ func (g *BlkTmplGenerator) ProcessNewBlock(account *crypto.Account, gasFloor, ga
 	defer func() {
 		if err != nil {
 			g.chain.Rollback()
+		} else if len(forbiddenTxHashes) > 0 {
+			g.txSource.UpdateForbiddenTxs(forbiddenTxHashes, int64(bestHeight + 1))
 		}
 	}()
 	if err != nil {
@@ -658,6 +661,7 @@ priorityQueueLoop:
 			log.Tracef("Skipping tx %s because it failed to connect",
 				tx.Hash())
 			logSkippedDeps(tx, deps)
+			forbiddenTxHashes = append(forbiddenTxHashes, tx.Hash())
 			continue
 		}
 

@@ -1649,7 +1649,7 @@ func (s *PublicRpcAPI) GetRawTransaction(txId string, verbose bool, vinExtra boo
 	var blkHash *common.Hash
 	var blkHeight int32
 	isVtx := false
-	tx, err := s.cfg.TxMemPool.FetchTransaction(&txHash)
+	tx, _, err := s.cfg.TxMemPool.FetchTransaction(&txHash)
 	if err != nil {
 		if s.cfg.TxIndex == nil {
 			return nil, &rpcjson.RPCError{
