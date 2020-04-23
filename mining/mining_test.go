@@ -182,7 +182,7 @@ func TestNewBlockTemplate(t *testing.T) {
 		keys = append(keys, &crypto.Account {*privKey, *privKey.PubKey(),addr})
 	}
 
-	fakeTxs := []*TxDesc{
+	fakeTxs := TxDescList{
 		{Tx: createFakeTx([]*fakeIn{
 			{
 				keys[0], 1e8, &asiutil.FlowCoinAsset, 0, false, 0, common.HexToHash("1"),
@@ -281,7 +281,7 @@ func TestNewBlockTemplate(t *testing.T) {
 		},
 	}, nil), GasPrice: 7})
 
-	invalidFakeTxs := []*TxDesc{
+	invalidFakeTxs := TxDescList{
 		{Tx: createFakeTx([]*fakeIn{
 			{
 				keys[0], 1e8, &asiutil.FlowCoinAsset, 0, false, 0, common.HexToHash("1"),
@@ -360,7 +360,7 @@ func TestNewBlockTemplate(t *testing.T) {
 		gasCeil     uint64
 		round       uint32
 		slot        uint16
-		txs         []*TxDesc
+		txs         TxDescList
 		wantTx      []*common.Hash
 		wantFees    map[protos.Assets]int64
 		wantOpCosts []int64
@@ -368,7 +368,7 @@ func TestNewBlockTemplate(t *testing.T) {
 		wantErr     bool
 	}{
 		{
-			account, 160000000, 160000000, 1, 0, []*TxDesc{},
+			account, 160000000, 160000000, 1, 0, TxDescList{},
 			[]*common.Hash{},
 			make(map[protos.Assets]int64),
 			[]int64{1}, 120, false,
@@ -388,7 +388,7 @@ func TestNewBlockTemplate(t *testing.T) {
 			make(map[protos.Assets]int64),
 			[]int64{1}, 120, false,
 		}, {
-			keys[0], 160000000, 160000000, 1, 0, []*TxDesc{},
+			keys[0], 160000000, 160000000, 1, 0, TxDescList{},
 			[]*common.Hash{},
 			make(map[protos.Assets]int64),
 			[]int64{1}, 0, true,
@@ -403,7 +403,7 @@ func TestNewBlockTemplate(t *testing.T) {
 			fakeTxSource.push(v)
 		}
 
-		block, err := g.ProcessNewBlock(test.validator, test.gasFloor, test.gasCeil, test.round, test.slot)
+		block, err := g.ProduceNewBlock(test.validator, test.gasFloor, test.gasCeil, test.round, test.slot)
 		if err != nil {
 			if test.wantErr != true {
 				t.Errorf("tests #%d error %v", i, err)

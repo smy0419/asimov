@@ -2587,6 +2587,9 @@ func NewServer(db database.Transactor, stateDB database.Database, agentBlacklist
 	// configuration options.
 	policy := mining.Policy{
 		TxMinPrice: chaincfg.Cfg.MinTxPrice,
+		BlockProductedTimeOut: mining.DefaultBlockProductedTimeOut,
+		TxConnectTimeOut: mining.DefaultTxConnectTimeOut,
+		UtxoValidateTimeOut: mining.UtxoValidateTimeOut,
 	}
 	blockTemplateGenerator := mining.NewBlkTmplGenerator(&policy,
 		s.txMemPool, s.sigMemPool, s.chain)

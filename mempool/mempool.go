@@ -1094,9 +1094,9 @@ func (mp *TxPool) TxHashes() []*common.Hash {
 // The descriptors are to be treated as read only.
 //
 // This function is safe for concurrent access.
-func (mp *TxPool) TxDescs() []*mining.TxDesc {
+func (mp *TxPool) TxDescs() mining.TxDescList {
 	mp.mtx.RLock()
-	descs := make([]*mining.TxDesc, 0, len(mp.pool))
+	descs := make(mining.TxDescList, 0, len(mp.pool))
 	for _, desc := range mp.pool {
 		if _, exist := mp.forbiddenTxs[*desc.Tx.Hash()]; !exist {
 			descs = append(descs, desc)

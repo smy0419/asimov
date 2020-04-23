@@ -950,8 +950,8 @@ func (fts *fakeTxSource) push(tx *TxDesc) {
 
 // MiningDescs returns a slice of mining descriptors for all the
 // transactions in the source pool.
-func (fts *fakeTxSource) TxDescs() []*TxDesc {
-	descs := make([]*TxDesc, len(fts.pool))
+func (fts *fakeTxSource) TxDescs() TxDescList {
+	descs := make(TxDescList, len(fts.pool))
 	i := 0
 	for _, desc := range fts.pool {
 		descs[i] = desc
