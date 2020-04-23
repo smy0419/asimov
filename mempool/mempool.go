@@ -568,6 +568,9 @@ func (mp *TxPool) checkPoolDoubleSpend(tx *asiutil.Tx, gasPrice float64) error {
 	for _, txIn := range tx.MsgTx().TxIn {
 		if txs, exists := mp.outpoints[txIn.PreviousOutPoint]; exists {
 			for _, txR := range txs {
+				if _, isForbidden := mp.forbiddenTxs[*txR.Hash()]; isForbidden {
+					continue
+				}
 				if txDesc, poolExists := mp.pool[*txR.Hash()]; poolExists{
 					if txDesc.GasPrice > gasPrice {
 						str := fmt.Sprintf("output %v already spent by "+

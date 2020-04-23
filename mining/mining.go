@@ -506,6 +506,7 @@ func (g *BlkTmplGenerator) ProduceNewBlock(account *crypto.Account, gasFloor, ga
 
 mempoolLoop:
 	for _, txDesc := range sourceTxns {
+		// break loop if time out
 		if float64(getMilliSecond() - produceBlockStartTime) > utxoValidateTimeInterval {
 			break
 		}
