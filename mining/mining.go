@@ -32,6 +32,12 @@ const (
 
 	// CoinbaseFlags is added to the coinbase script of a generated block.
 	CoinbaseFlags = "/P2SH/asimovd/"
+
+	// Init status of minging source tx
+	MiningTxInit = 1 << iota
+
+	// Processed status of minging source tx
+	MiningTxProcessed
 )
 
 // TxDesc is a descriptor about a transaction in a transaction source along with
@@ -178,16 +184,19 @@ func NewTxPriorityQueue(reserve int) *txPriorityQueue {
 // viewA will contain all of its original entries plus all of the entries
 // in viewB.  It will replace any entries in viewB which also exist in viewA
 // if the entry in viewA is spent.
-func (g *BlkTmplGenerator) mergeUtxoView(viewA ainterface.IUtxoViewpoint, viewB ainterface.IUtxoViewpoint) ainterface.IUtxoViewpoint {
-	view := viewA.Clone()
+func (g *BlkTmplGenerator) mergeUtxoView(viewA ainterface.IUtxoViewpoint, viewB ainterface.IUtxoViewpoint) (
+	ainterface.IUtxoViewpoint, bool) {
 	viewAEntries := viewA.Entries()
-	for outpoint, entryB := range viewB.Entries() {
-		if entryA, exists := viewAEntries[outpoint]; !exists ||
-			entryA == nil || entryA.IsSpent() {
-			view.AddEntry(outpoint, entryB)
+	for outpoint, _ := range viewB.Entries() {
+		if entryA, exists := viewAEntries[outpoint]; exists && entryA != nil {
+			return viewA, false
 		}
 	}
-	return view
+	view := viewA.Clone()
+	for outpoint, entryB := range viewB.Entries() {
+		view.AddEntry(outpoint, entryB)
+	}
+	return view, true
 }
 
 // StandardCoinbaseScript returns a standard script suitable for use as the
@@ -354,9 +363,9 @@ func (g *BlkTmplGenerator) ProduceNewBlock(account *crypto.Account, gasFloor, ga
 
 	forbiddenTxHashes := make([]*common.Hash, 0, len(sourceTxns))
 	priorityQueue := NewTxPriorityQueue(len(sourceTxns))
-	txpool := make(map[common.Hash]bool)
+	txpool := make(map[common.Hash]int)
 	for _, tx := range sourceTxns {
-		txpool[*tx.Tx.Hash()] = true
+		txpool[*tx.Tx.Hash()] = MiningTxInit
 	}
 
 	// Collect pre blocks sigs
@@ -513,7 +522,6 @@ mempoolLoop:
 		// A block can't have more than one coinbase or contain
 		// non-finalized transactions.
 		tx := txDesc.Tx
-		log.Debugf("NewBlockTemplate: tx.Hash = %s", tx.Hash())
 		if blockchain.IsCoinBase(tx) {
 			log.Tracef("Skipping coinbase tx %s", tx.Hash())
 			continue
@@ -600,6 +608,7 @@ mempoolLoop:
 
 	// Choose which transactions make it into the block.
 	processTxStartTime := getMilliSecond()
+	log.Debugf("Start priorityQueue", priorityQueue.Len())
 priorityQueueLoop:
 	for priorityQueue.Len() > 0 {
 		if float64(getMilliSecond() - produceBlockStartTime) > produceBlockTimeInterval {
@@ -610,6 +619,7 @@ priorityQueueLoop:
 		// depending on the sort order) transaction.
 		prioItem := heap.Pop(priorityQueue).(*TxPrioItem)
 		tx := prioItem.tx
+		txpool[*tx.Hash()] = MiningTxProcessed
 
 		// Grab any transactions which depend on this one.
 		deps := dependers[*tx.Hash()]
@@ -639,7 +649,13 @@ priorityQueueLoop:
 		// Merge the referenced outputs from the input transactions to
 		// this transaction into the block utxo view.  This allows the
 		// code below to avoid a second lookup.
-		mergeView := g.mergeUtxoView(blockUtxos, prioItem.utxos).(*blockchain.UtxoViewpoint)
+		mView, canMerge := g.mergeUtxoView(blockUtxos, prioItem.utxos)
+		if !canMerge {
+			log.Tracef("Skipping tx %s due to double spend: %v", tx.Hash())
+			logSkippedDeps(tx, deps)
+			continue
+		}
+		mergeView := mView.(*blockchain.UtxoViewpoint)
 
 		// Enforce maximum signature operation cost per block.  Also
 		// check for overflow.
@@ -760,7 +776,7 @@ priorityQueueLoop:
 			// Add the transaction to the priority queue if there
 			// are no more dependencies after this one.
 			delete(item.dependsOn, *tx.Hash())
-			if len(item.dependsOn) == 0 {
+			if len(item.dependsOn) == 0 && txpool[*item.tx.Hash()] != MiningTxProcessed {
 				heap.Push(priorityQueue, item)
 			}
 		}

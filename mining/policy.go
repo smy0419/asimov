@@ -18,7 +18,7 @@ const (
 	// 2. process block in the miner node
 	// 3. broadcast the block
 	// 4. process block in other nodes
-	DefaultBlockProductedTimeOut = 0.3
+	DefaultBlockProductedTimeOut = 0.5
 
 	// DefaultTxConnectTimeOut is the default value for the policy
 	// `TxConnectTimeOut`. The whole progress of producing a block contains:
@@ -27,10 +27,10 @@ const (
 	// 3. connect txs (*DefaultTxConnectTimeOut)
 	// 4. create coinbase (maybe coinbase tx need execute vm)
 	// 5. commit state db.
-	DefaultTxConnectTimeOut = 0.75
+	DefaultTxConnectTimeOut = 0.7
 
 	// refer to doc of DefaultTxConnectTimeOut
-	UtxoValidateTimeOut = 0.2
+	UtxoValidateTimeOut = 0.35
 )
 
 // Policy houses the policy (configuration parameters) which is used to control
