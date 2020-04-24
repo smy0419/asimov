@@ -960,6 +960,9 @@ func (fts *fakeTxSource) TxDescs() TxDescList {
 	return descs
 }
 
+func (fts *fakeTxSource) UpdateForbiddenTxs(txHashes []*common.Hash, height int64) {
+}
+
 type fakeSigSource struct {
 	pool []*asiutil.BlockSign
 }

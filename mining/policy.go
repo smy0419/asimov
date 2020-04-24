@@ -43,15 +43,15 @@ type Policy struct {
 	TxMinPrice float64
 
 	// BlockProductedTimeOut limits a block producing time.
-	// It is the maximum percent (default 0.3) of producing block interval.
+	// It is the maximum percent (default 0.5) of producing block interval.
 	BlockProductedTimeOut float64
 
 	// TxConnectTimeOut limits a tx connecting time, include executing vm.
-	// It is the maximum percent (default 0.75) of producing block producing
+	// It is the maximum percent (default 0.7) of producing block producing
 	// interval.
 	TxConnectTimeOut float64
 
 	// UtxoValidateTimeOut limits source txs' utxo validating time.
-	// It is the maximum percent (default 0.1) of producing block interval.
+	// It is the maximum percent (default 0.35) of producing block interval.
 	UtxoValidateTimeOut float64
 }

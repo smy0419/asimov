@@ -188,13 +188,15 @@ func (g *BlkTmplGenerator) mergeUtxoView(viewA ainterface.IUtxoViewpoint, viewB 
 	ainterface.IUtxoViewpoint, bool) {
 	viewAEntries := viewA.Entries()
 	for outpoint, _ := range viewB.Entries() {
-		if entryA, exists := viewAEntries[outpoint]; exists && entryA != nil {
+		if entryA, exists := viewAEntries[outpoint]; exists && entryA != nil && entryA.IsSpent() {
 			return viewA, false
 		}
 	}
 	view := viewA.Clone()
 	for outpoint, entryB := range viewB.Entries() {
-		view.AddEntry(outpoint, entryB)
+		if entryB != nil {
+			view.AddEntry(outpoint, entryB)
+		}
 	}
 	return view, true
 }
