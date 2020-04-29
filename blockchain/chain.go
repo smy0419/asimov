@@ -2377,13 +2377,13 @@ func (b *BlockChain) isCurrent() bool {
 		return true
 	}
 
-	// Not current if the latest best block has a timestamp before 24 hours
+	// Not current if the latest best block has a timestamp before a hour
 	// ago.
 	//
 	// The chain appears to be current if none of the checks reported
 	// otherwise.
-	minus24Hours := b.timeSource.AdjustedTime() - 24*int64(time.Hour/time.Second)
-	return b.bestChain.Tip().timestamp >= minus24Hours
+	minusHour := b.timeSource.AdjustedTime() - int64(time.Hour/time.Second)
+	return b.bestChain.Tip().timestamp >= minusHour
 }
 
 // IsCurrent returns whether or not the chain believes it is current.  Several
