@@ -1947,7 +1947,7 @@ func (b *BlockChain) createContract(
 	}
 
 	// Init Template
-	err, leftOverGas = InitTemplate(category, templateName, newAddr, leftOverGas, &out.Assets, b, vmenv)
+	err, leftOverGas = b.InitTemplate(category, templateName, newAddr, leftOverGas, &out.Assets, vmenv)
 	if err != nil {
 		errStr := fmt.Sprint("init template error ", category, templateName, newAddr, err)
 		err = ruleError(ErrFailedInitTemplate, errStr)
