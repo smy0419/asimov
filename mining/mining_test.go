@@ -7,7 +7,6 @@ package mining
 
 import (
 	"container/heap"
-	"github.com/AsimovNetwork/asimov/ainterface"
 	"github.com/AsimovNetwork/asimov/asiutil"
 	"github.com/AsimovNetwork/asimov/blockchain"
 	"github.com/AsimovNetwork/asimov/chaincfg"
@@ -120,9 +119,9 @@ func TestCreateCoinbaseTx(t *testing.T) {
 
 func TestNewBlockTemplate(t *testing.T) {
 	policy := Policy{
-		BlockProductedTimeOut: DefaultBlockProductedTimeOut,
-		TxConnectTimeOut: DefaultTxConnectTimeOut,
-		UtxoValidateTimeOut: UtxoValidateTimeOut,
+		BlockProductedTimeOut: chaincfg.DefaultBlockProductedTimeOut,
+		TxConnectTimeOut: chaincfg.DefaultTxConnectTimeOut,
+		UtxoValidateTimeOut: chaincfg.DefaultUtxoValidateTimeOut,
 	}
 	chain, teardownFunc, err := newFakeChain(&chaincfg.DevelopNetParams)
 	if err != nil {
@@ -143,7 +142,7 @@ func TestNewBlockTemplate(t *testing.T) {
 
 	global_view := blockchain.NewUtxoViewpoint()
 
-	g.FetchUtxoView = func(tx *asiutil.Tx, dolock bool) (viewpoint ainterface.IUtxoViewpoint, e error) {
+	g.FetchUtxoView = func(tx *asiutil.Tx, dolock bool) (viewpoint *blockchain.UtxoViewpoint, e error) {
 		neededSet := make(map[protos.OutPoint]struct{})
 		prevOut := protos.OutPoint{Hash: *tx.Hash()}
 		for txOutIdx := range tx.MsgTx().TxOut {

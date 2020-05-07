@@ -9,6 +9,7 @@ import (
 	"github.com/AsimovNetwork/asimov/ainterface"
 	"github.com/AsimovNetwork/asimov/chaincfg"
 	"github.com/AsimovNetwork/asimov/common"
+	"github.com/AsimovNetwork/asimov/protos"
 	"github.com/AsimovNetwork/asimov/vm/fvm"
 )
 
@@ -17,8 +18,10 @@ import (
 // plugged into normal chain processing.
 type Manager struct {
 	chain fvm.ChainContext
-	//  genesis transaction data cache
+	// genesis transaction data cache
 	genesisDataCache map[common.ContractCode][]chaincfg.ContractInfo
+	// unrestricted assets cache
+	assetsUnrestrictedCache map[protos.Assets]struct{}
 }
 
 // Init manager by genesis data.
@@ -30,6 +33,7 @@ func (m *Manager) Init(chain fvm.ChainContext, dataBytes [] byte) error {
 	}
 	m.chain = chain
 	m.genesisDataCache = cMap
+	m.assetsUnrestrictedCache = make(map[protos.Assets]struct{})
 	return nil
 }
 

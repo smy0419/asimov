@@ -513,7 +513,7 @@ func (m *ManagerTmp) IsSupport(block *asiutil.Block,
 		panic(errStr)
 	}
 	proxyAddr, abi := vm.ConvertSystemContractAddress(common.RegistryCenter), contract.AbiInfo
-	funcName := common.ContractRegistryCenter_CanTransferRestrictedAssetFunction()
+	funcName := common.ContractRegistryCenter_GetOrganizationAddressByIdFunction()
 	input, err := fvm.PackFunctionArgs(abi, funcName, organizationId, assetIndex, transferAddress)
 	if err != nil {
 		return false, gasLimit
@@ -527,12 +527,28 @@ func (m *ManagerTmp) IsSupport(block *asiutil.Block,
 		return false, leftOverGas
 	}
 
-	var support bool
-	err = fvm.UnPackFunctionResult(abi, &support, funcName, result)
+	var outType common.Address
+	err = fvm.UnPackFunctionResult(abi, &outType, funcName, result)
 	if err != nil {
 		log.Error(err)
 	}
-	return support, gasLimit - common.SupportCheckGas + leftOverGas
+
+	if common.EmptyAddressValue == outType.String() {
+		return false, gasLimit - common.SupportCheckGas + leftOverGas
+	}
+
+	transferInput := common.PackCanTransferInput(transferAddress, assetIndex)
+
+	result2, leftOverGas2, _ := fvm.CallReadOnlyFunction(caller, block, m.chain,
+		stateDB, chaincfg.ActiveNetParams.FvmParam,
+		common.ReadOnlyGas, outType, transferInput)
+
+	support, err := common.UnPackBoolResult(result2)
+	if err != nil {
+		log.Error(err)
+	}
+
+	return support, gasLimit - common.SupportCheckGas + leftOverGas + leftOverGas2 - common.ReadOnlyGas
 }
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 

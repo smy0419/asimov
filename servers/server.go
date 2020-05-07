@@ -2551,12 +2551,13 @@ func NewServer(db database.Transactor, stateDB database.Database, agentBlacklist
 			MaxSigOpCostPerTx: blockchain.MaxBlockSigOpsCost,
 			MinRelayTxPrice:   chaincfg.Cfg.MinTxPrice,
 			MaxTxVersion:      2,
+			RejectReplacement: cfg.RejectReplacement,
 		},
 		FetchUtxoView:  s.chain.FetchUtxoView,
 		Chain:          s.chain,
 		BestHeight:     func() int32 { return s.chain.BestSnapshot().Height },
 		MedianTimePast: func() int64 { return s.chain.BestSnapshot().TimeStamp },
-		CalcSequenceLock: func(tx *asiutil.Tx, view ainterface.IUtxoViewpoint) (*blockchain.SequenceLock, error) {
+		CalcSequenceLock: func(tx *asiutil.Tx, view *blockchain.UtxoViewpoint) (*blockchain.SequenceLock, error) {
 			return s.chain.CalcSequenceLock(tx, view, true)
 		},
 		AddrIndex:              s.addrIndex,
@@ -2587,9 +2588,9 @@ func NewServer(db database.Transactor, stateDB database.Database, agentBlacklist
 	// configuration options.
 	policy := mining.Policy{
 		TxMinPrice: chaincfg.Cfg.MinTxPrice,
-		BlockProductedTimeOut: mining.DefaultBlockProductedTimeOut,
-		TxConnectTimeOut: mining.DefaultTxConnectTimeOut,
-		UtxoValidateTimeOut: mining.UtxoValidateTimeOut,
+		BlockProductedTimeOut: cfg.BlkProductedTimeOut,
+		TxConnectTimeOut: cfg.TxConnectTimeOut,
+		UtxoValidateTimeOut: cfg.UtxoValidateTimeOut,
 	}
 	blockTemplateGenerator := mining.NewBlkTmplGenerator(&policy,
 		s.txMemPool, s.sigMemPool, s.chain)

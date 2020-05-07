@@ -55,7 +55,7 @@ const (
 
 	maxRequestedSigns = protos.MaxInvPerMsg
 
-	maxOrphanBlock = 120
+	maxOrphanBlock = 20
 )
 
 // zeroHash is the zero value hash (all zeros).  It is defined as a convenience.
@@ -198,7 +198,9 @@ type SyncManager struct {
 	startHeader      *list.Element
 	nextCheckpoint   *chaincfg.Checkpoint
 
-	account          *crypto.Account
+	account      *crypto.Account
+	signedHeight map[int32]interface{}
+	tipHeight    int32
 	BroadcastMessage func(msg protos.Message, exclPeers ...interface{})
 }
 
@@ -683,34 +685,6 @@ func (sm *SyncManager) current() bool {
 	return true
 }
 
-//sign the block from other peers:
-func (sm *SyncManager) poaBlockSignature(block *asiutil.Block, account *crypto.Account) {
-	header := block.MsgBlock().Header
-
-	blockHash := block.MsgBlock().BlockHash()
-	//对收到的block签名
-	signature, err := crypto.Sign(blockHash[:], (*ecdsa.PrivateKey)(&account.PrivateKey))
-	if err != nil {
-		log.Errorf("[PoaService],Sign error:%s.", err)
-		return
-	}
-
-	var sigMsg protos.MsgBlockSign
-	copy(sigMsg.Signature[:], signature)
-	sigMsg.BlockHeight = header.Height
-	sigMsg.BlockHash = blockHash
-	sigMsg.Signer = *account.Address
-
-	sig := asiutil.NewBlockSign(&sigMsg)
-	err = sm.sigMemPool.ProcessSig(sig)
-	if err != nil {
-		log.Debugf("poaBlockSignature: can not Sign block: %s.", err)
-		return
-	}
-
-	sm.peerNotifier.AnnounceNewSignature(sig)
-}
-
 // handleBlockMsg handles block messages from all peers.
 func (sm *SyncManager) handleBlockMsg(bmsg *blockMsg) {
 	peer := bmsg.peer
@@ -778,10 +752,10 @@ func (sm *SyncManager) handleBlockMsg(bmsg *blockMsg) {
 	prevBlock := &bmsg.block.MsgBlock().Header.PrevBlock
 	if !sm.chain.MainChainHasBlock(prevBlock) && !sm.chain.IsCurrent() {
 		state.orphanBlocks++
-		if state.orphanBlocks % maxOrphanBlock == 0 {
-			peer.AddBanScore(20,0,"orphan block")
+		if state.orphanBlocks > maxOrphanBlock {
+			peer.AddBanScore(100,0,"orphan block when chain not current")
 		}
-		log.Debugf("Got orphan block from peer:%s when chain not current",peer)
+		log.Warnf("Got orphan block from peer:%s when chain not current",peer)
 		return
 	}
 
@@ -1202,6 +1176,18 @@ func (sm *SyncManager) handleInvMsg(imsg *invMsg) {
 		}
 	}
 
+	// Don't get the data of a single inventory when the chain is not current.
+	if lastBlock != -1 && !sm.chain.IsCurrent() && len(invVects) == 1  {
+		// Send the getblock message when the number of blocks currently being
+		// requested is 0.
+		if len(state.requestedBlocks) == 0 {
+			inv := invVects[lastBlock]
+			locator := sm.chain.BlockLocatorFromHash(&inv.Hash)
+			peer.PushGetBlocksMsg(locator, &zeroHash)
+		}
+		return
+	}
+
 	// Request the advertised inventory if we don't already have it.  Also,
 	// request parent blocks of orphans if we receive one we already have.
 	// Finally, attempt to detect potential stalls due to long side chains
@@ -1523,31 +1509,9 @@ func (sm *SyncManager) handleBlockchainNotification(notification *blockchain.Not
 		}
 
 		if sm.account != nil {
-			//get the validators of current block:
-			header := block.MsgBlock().Header
-			validators, weightMap, err := sm.chain.GetValidators(header.Round)
-			if err != nil {
-				log.Warnf("handleBlockchainNotification: get validators error.")
-				break
-			}
-			if header.SlotIndex >= uint16(len(validators)) {
-				log.Errorf("handleBlockchainNotification: slot outbound of validators")
-				break
-			}
-
-			// Test Code
-			// naccout, _ := account.NewAccount("0x845f3e48e5809f27aae63b617f77009aa6b83139d2c39ada0ed1a89a67407cae")
-			// sm.poaBlockSignature(block, naccout)
-
-			// if this block is gen by other nodes
-			if *validators[header.SlotIndex] == *sm.account.Address {
-				break
-			}
-
-			if _, ok := weightMap[*sm.account.Address]; ok {
-				sm.poaBlockSignature(block, sm.account)
-			}
+			sm.makeSignature(block)
 		}
+		sm.tipHeight = block.Height()
 
 	// A block has been disconnected from the main block chain.
 	case blockchain.NTBlockDisconnected:
@@ -1750,6 +1714,7 @@ func New(config *Config) (*SyncManager, error) {
 		msgChan:          make(chan interface{}, config.MaxPeers*3),
 		headerList:       list.New(),
 		quit:             make(chan struct{}),
+		signedHeight:     make(map[int32]interface{}),
 		account:          config.Account,
 		BroadcastMessage: config.BroadcastMessage,
 	}
@@ -1764,6 +1729,7 @@ func New(config *Config) (*SyncManager, error) {
 	} else {
 		log.Info("Checkpoints are disabled")
 	}
+	sm.tipHeight = best.Height
 
 	sm.chain.Subscribe(sm.handleBlockchainNotification)
 
@@ -1776,4 +1742,62 @@ func (sm *SyncManager) ListPeerStates() []string {
 		peers = append(peers, k.Addr())
 	}
 	return peers
+}
+
+// makeSignature add a signature for block,
+// it only make one signature for the same height when soft fork appears.
+func (sm *SyncManager) makeSignature(block *asiutil.Block) {
+	if sm.tipHeight >= block.Height() {
+		return
+	}
+	if sm.signedHeight[block.Height()] != nil {
+		return
+	}
+	header := &block.MsgBlock().Header
+	// Verify the block timestamp
+	if header.Timestamp < (time.Now().Unix() - 5 * int64(time.Minute/time.Second)) {
+		return
+	}
+	// self mined block is needn't make signature
+	//if header.CoinBase == *sm.account.Address {
+	//	return
+	//}
+	//get the validators of current block:
+	validators, weightMap, err := sm.chain.GetValidators(header.Round)
+	if err != nil {
+		return
+	}
+	if header.SlotIndex >= uint16(len(validators)) {
+		return
+	}
+
+	if _, ok := weightMap[*sm.account.Address]; !ok {
+		return
+	}
+
+	blockHash := block.MsgBlock().BlockHash()
+
+	signature, err := crypto.Sign(blockHash[:], (*ecdsa.PrivateKey)(&sm.account.PrivateKey))
+	if err != nil {
+		log.Errorf("[PoaService],Sign error:%s.", err)
+		return
+	}
+
+	var sigMsg protos.MsgBlockSign
+	copy(sigMsg.Signature[:], signature)
+	sigMsg.BlockHeight = header.Height
+	sigMsg.BlockHash = blockHash
+	sigMsg.Signer = *sm.account.Address
+
+	sig := asiutil.NewBlockSign(&sigMsg)
+
+	err = sm.sigMemPool.ProcessSig(sig)
+	if err != nil {
+		return
+	}
+
+	sm.peerNotifier.AnnounceNewSignature(sig)
+
+	sm.signedHeight[block.Height()] = struct {}{}
+	delete(sm.signedHeight, block.Height() - common.BlockSignDepth)
 }
