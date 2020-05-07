@@ -34,11 +34,6 @@ const (
 	// forbiddenTxLimit is the maximum count of forbidden transactions in cache.
 	forbiddenTxLimit = 1000
 
-	// MaxRBPSequence is the maximum sequence number an input can use to
-	// signal that the transaction spending it can be replaced using the
-	// Replace-By-Price (RBP) policy.
-	MaxRBPSequence = 0xfffffffd
-
 	// MaxReplacementEvictions is the maximum number of transactions that
 	// can be evicted from the mempool when accepting a transaction
 	// replacement.
@@ -546,60 +541,6 @@ func (mp *TxPool) addTransaction(utxoView *blockchain.UtxoViewpoint, tx *asiutil
 	return txD
 }
 
-// signalsReplacement determines if a transaction is signaling that it can be
-// replaced using the Replace-By-Price (RBP) policy. This policy specifies two
-// ways a transaction can signal that it is replaceable:
-//
-// Explicit signaling: A transaction is considered to have opted in to allowing
-// replacement of itself if any of its inputs have a sequence number less than
-// 0xfffffffe.
-//
-// Inherited signaling: Transactions that don't explicitly signal replaceability
-// are replaceable under this policy for as long as any one of their ancestors
-// signals replaceability and remains unconfirmed.
-//
-// The cache is optional and serves as an optimization to avoid visiting
-// transactions we've already determined don't signal replacement.
-//
-// This function MUST be called with the mempool lock held (for reads).
-func (mp *TxPool) signalsReplacement(tx *asiutil.Tx,
-	cache map[common.Hash]struct{}) bool {
-
-	// If a cache was not provided, we'll initialize one now to use for the
-	// recursive calls.
-	if cache == nil {
-		cache = make(map[common.Hash]struct{})
-	}
-
-	for _, txIn := range tx.MsgTx().TxIn {
-		if txIn.Sequence <= MaxRBPSequence {
-			return true
-		}
-
-		hash := txIn.PreviousOutPoint.Hash
-		unconfirmedAncestor, ok := mp.pool[hash]
-		if !ok {
-			continue
-		}
-
-		// If we've already determined the transaction doesn't signal
-		// replacement, we can avoid visiting it again.
-		if _, ok := cache[hash]; ok {
-			continue
-		}
-
-		if mp.signalsReplacement(unconfirmedAncestor.Tx, cache) {
-			return true
-		}
-
-		// Since the transaction doesn't signal replacement, we'll cache
-		// its result to ensure we don't attempt to determine so again.
-		cache[hash] = struct{}{}
-	}
-
-	return false
-}
-
 // checkPoolDoubleSpend checks whether or not the passed transaction is
 // attempting to spend coins already spent by other transactions in the pool.
 // Note it does not check for double spends against transactions already in the
@@ -616,8 +557,7 @@ func (mp *TxPool) checkPoolDoubleSpend(tx *asiutil.Tx) (bool, error) {
 
 		// Reject the transaction if we don't accept replacement
 		// transactions or if it doesn't signal replacement.
-		if mp.cfg.Policy.RejectReplacement ||
-			!mp.signalsReplacement(conflict, nil) {
+		if mp.cfg.Policy.RejectReplacement {
 			str := fmt.Sprintf("output %v already spent by "+
 				"transaction %v in the memory pool",
 				txIn.PreviousOutPoint, conflict.Hash())
@@ -844,16 +784,13 @@ func (mp *TxPool) validateReplacement(tx *asiutil.Tx,
 	)
 
 	for hash, conflict := range conflicts {
-		if _, isForbidden := mp.forbiddenTxs[hash]; isForbidden {
-			continue
-		}
-		if gasPrice <= mp.pool[hash].GasPrice {
+		_, isForbidden := mp.forbiddenTxs[hash]
+		if !isForbidden && gasPrice <= mp.pool[hash].GasPrice {
 			str := fmt.Sprintf("replacement transaction %v has an "+
 				"insufficient gasPrice: needs more than %v, has %v",
 				hash, mp.pool[hash].GasPrice, gasPrice)
 			return nil, txRuleError(protos.RejectDuplicate, str)
 		}
-
 		// We'll track each conflict's parents to ensure the replacement
 		// isn't spending any new unconfirmed inputs.
 		for _, txIn := range conflict.MsgTx().TxIn {
