@@ -534,23 +534,17 @@ func (fvm *FVM) RegistryCenterCheck(caller ContractRef, gas uint64, asset *proto
 		return nil, gas
 	}
 
-	registryCenterAddr, _, registryCenterABI := fvm.GetSystemContractInfo(common.RegistryCenter)
-	canTransferFunction := common.ContractRegistryCenter_CanTransferFunction()
+	registryCenterAddr, _, _ := fvm.GetSystemContractInfo(common.RegistryCenter)
 	_, orgId, coinIndex := asset.AssetFields()
 
-	// pack arguments for canTransferFunction
-	args, err := fvm.PackFunctionArgs(registryCenterABI, canTransferFunction, orgId, coinIndex)
-	if err != nil {
-		return errors.New("error packing function arguments for `CanTransfer`"), gas
-	}
+	// pack arguments for canTransfer func
+	args := common.PackRegistryCanTransferInput(orgId, coinIndex)
+
 	// RegistryCenter.canTransfer costs 3473 gas, 2300 is not enough
 	ret, _, _, err := fvm.Call(caller, registryCenterAddr, args, 5000, common.Big0, nil, false)
-	// parse the result.
-	var outType bool
-	err = fvm.UnPackFunctionResult(registryCenterABI, &outType, canTransferFunction, ret)
-	if err != nil {
-		return errors.New("error unpacking function result for `CanTransfer`"), gas
-	}
+
+	// unpack result
+	outType, err := common.UnPackBoolResult(ret)
 	if !outType {
 		return errors.New("can not transfer"), gas
 	}

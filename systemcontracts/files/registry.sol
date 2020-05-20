@@ -113,7 +113,7 @@ contract RegistryCenter {
      */
     function registerOrganization(string organizationName, string templateName) public returns(uint32) {
         require(bytes(organizationName).length > 0, "invalid organization name");
-        require(bytes(templateName).length > 0, "invalid template name");
+        require(bytes(templateName).length > 0 && bytes(templateName).length <= 128, "invalid template name");
         require(!organizationNameMap[organizationName], "organization name already existed");
 
         lastOrganizationIdAssigned = SafeMath.addUint32(lastOrganizationIdAssigned, 1);
