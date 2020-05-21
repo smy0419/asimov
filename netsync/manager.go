@@ -135,7 +135,8 @@ type processBlockMsg struct {
 // requesting whether or not the sync manager believes it is synced with the
 // currently connected peers.
 type isCurrentMsg struct {
-	reply chan bool
+	checkAccept bool
+	reply       chan bool
 }
 
 // pauseMsg is a message type to be sent across the message channel for
@@ -668,7 +669,7 @@ func (sm *SyncManager) pushErrorMsg(peer *peerpkg.Peer, rejectMap map[common.Has
 
 //current returns the result by checkCurrent and store it.
 func (sm *SyncManager) current() bool{
-	cur := sm.checkCurrent()
+	cur := sm.checkCurrent(false)
 	if cur && sm.isCurrent == 0 {
 		atomic.StoreInt32(&sm.isCurrent,1)
 	}
@@ -681,7 +682,7 @@ func (sm *SyncManager) GetCurrent() bool{
 
 // checkCurrent returns true if we believe we are synced with our peers, false if we
 // still have blocks to check
-func (sm *SyncManager) checkCurrent() bool {
+func (sm *SyncManager) checkCurrent(checkAccept bool) bool {
 	if !sm.chain.IsCurrent() {
 		return false
 	}
@@ -692,9 +693,13 @@ func (sm *SyncManager) checkCurrent() bool {
 		return true
 	}
 
+	if checkAccept && sm.syncPeer.LastAcceptBlock() == 0 {
+		return true
+	}
+
 	// No matter what chain thinks, if we are below the block we are syncing
 	// to we are not current.
-	if sm.syncPeer.LastAcceptBlock() > 0 && sm.chain.BestSnapshot().Height < sm.syncPeer.LastBlock() {
+	if sm.chain.BestSnapshot().Height < sm.syncPeer.LastBlock() {
 		return false
 	}
 	return true
@@ -1433,7 +1438,11 @@ out:
 			//case processSigMsg:
 
 			case isCurrentMsg:
-				msg.reply <- sm.current()
+				if msg.checkAccept {
+					msg.reply <- sm.checkCurrent(true)
+				} else {
+					msg.reply <- sm.current()
+				}
 
 			case pauseMsg:
 				// Wait until the sender unpauses the manager.
@@ -1697,6 +1706,14 @@ func (sm *SyncManager) ProcessBlock(block *asiutil.Block, flags common.BehaviorF
 func (sm *SyncManager) IsCurrent() bool {
 	reply := make(chan bool)
 	sm.msgChan <- isCurrentMsg{reply: reply}
+	return <-reply
+}
+
+// IsCurrent returns whether or not the sync manager believes it is synced with
+// the connected peers or it not accepted blocks.
+func (sm *SyncManager) IsCurrentAndCheckAccepted() bool {
+	reply := make(chan bool)
+	sm.msgChan <- isCurrentMsg{checkAccept: true, reply: reply}
 	return <-reply
 }
 
