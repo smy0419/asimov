@@ -215,12 +215,7 @@ func (fvm *FVM) Call(caller ContractRef, addr common.Address, input []byte,
 		return nil, gas, -1, ErrDepth
 	}
 
-	// Fail if we're trying to transfer more than the available balance
-	err, leftOverGas = fvm.RegistryCenterCheck(caller, gas, asset)
-	if err != nil {
-		return nil, leftOverGas, -1, err
-	}
-
+	leftOverGas = gas
 	if doTransfer && !fvm.Context.CanTransfer(fvm.Block, fvm.StateDB, caller.Address(), value, fvm.Vtx, fvm.CalculateBalance, asset) {
 		return nil, leftOverGas, -1, ErrInsufficientBalance
 	}
@@ -290,11 +285,8 @@ func (fvm *FVM) CallCode(caller ContractRef, addr common.Address, input []byte,
 	if fvm.depth > int(params.CallCreateDepth) {
 		return nil, gas, ErrDepth
 	}
-	// Fail if we're trying to transfer more than the available balance
-	err, leftOverGas = fvm.RegistryCenterCheck(caller, gas, assets)
-	if err != nil {
-		return nil, leftOverGas, err
-	}
+
+	leftOverGas = gas
 	if !fvm.CanTransfer(fvm.Block, fvm.StateDB, caller.Address(), value, fvm.Vtx, fvm.CalculateBalance, assets) {
 		return nil, leftOverGas, ErrInsufficientBalance
 	}
@@ -527,27 +519,3 @@ func (fvm *FVM) Create2(caller ContractRef, code []byte, gas uint64, endowment *
 
 // ChainConfig returns the environment's chain configuration
 func (fvm *FVM) ChainConfig() *params.ChainConfig { return fvm.chainConfig }
-
-// Check whether the asset is valid or not.
-func (fvm *FVM) RegistryCenterCheck(caller ContractRef, gas uint64, asset *protos.Asset) (err error, leftOverGas uint64) {
-	if asset == nil || asset.IsFlowCoin() {
-		return nil, gas
-	}
-
-	registryCenterAddr, _, _ := fvm.GetSystemContractInfo(common.RegistryCenter)
-	_, orgId, coinIndex := asset.AssetFields()
-
-	// pack arguments for canTransfer func
-	args := common.PackRegistryCanTransferInput(orgId, coinIndex)
-
-	// RegistryCenter.canTransfer costs 3473 gas, 2300 is not enough
-	ret, _, _, err := fvm.Call(caller, registryCenterAddr, args, 5000, common.Big0, nil, false)
-
-	// unpack result
-	outType, err := common.UnPackBoolResult(ret)
-	if !outType {
-		return errors.New("can not transfer"), gas
-	}
-
-	return nil, gas
-}
