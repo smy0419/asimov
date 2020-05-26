@@ -2598,7 +2598,7 @@ func NewServer(db database.Transactor, stateDB database.Database, agentBlacklist
 	consensusConfig := params.Config{
 		BlockTemplateGenerator: blockTemplateGenerator,
 		ProcessBlock:           s.syncManager.ProcessBlock,
-		IsCurrent:              s.syncManager.IsCurrent,
+		IsCurrent:              s.syncManager.IsCurrentAndCheckAccepted,
 		ProcessSig:             s.sigMemPool.ProcessSig,
 		Chain:                  s.chain,
 		GasFloor:     common.GasFloor,
