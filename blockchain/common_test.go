@@ -513,6 +513,8 @@ func (m *ManagerTmp) IsSupport(block *asiutil.Block,
 	caller := chaincfg.OfficialAddress
 	registryCenterAddress := vm.ConvertSystemContractAddress(common.RegistryCenter)
 
+
+
 	input := common.PackGetOrganizationAddressByIdInput(organizationId, assetIndex)
 	result, leftOverGas, err := fvm.CallReadOnlyFunction(caller, block, m.chain,
 		stateDB, chaincfg.ActiveNetParams.FvmParam,
