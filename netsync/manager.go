@@ -126,9 +126,10 @@ type processBlockResponse struct {
 // extra handling whereas this message essentially is just a concurrent safe
 // way to call ProcessBlock on the internal block chain instance.
 type processBlockMsg struct {
-	block *asiutil.Block
-	flags common.BehaviorFlags
-	reply chan processBlockResponse
+	block  *asiutil.Block
+	vblock *asiutil.VBlock
+	flags  common.BehaviorFlags
+	reply  chan processBlockResponse
 }
 
 // isCurrentMsg is a message type to be sent across the message channel for
@@ -760,15 +761,6 @@ func (sm *SyncManager) handleBlockMsg(bmsg *blockMsg) {
 	delete(state.requestedBlocks, *blockHash)
 	delete(sm.requestedBlocks, *blockHash)
 
-	////check poa:
-	//header := bmsg.block.MsgBlock().Header
-	//if configuration.ActiveNetParams.Consensus == common.POA {
-	//	if sm.current() == true {
-	//		//record all the block header that signature confirmed:
-	//		sm.chain.AddSuspectHeader(&header)
-	//	}
-	//}
-
 	prevBlock := &bmsg.block.MsgBlock().Header.PrevBlock
 	if !sm.chain.MainChainHasBlock(prevBlock) && !sm.chain.IsCurrent() {
 		state.orphanBlocks++
@@ -781,7 +773,7 @@ func (sm *SyncManager) handleBlockMsg(bmsg *blockMsg) {
 
 	// Process the block to include validation, best chain selection, orphan
 	// handling, etc.
-	_, isOrphan, err := sm.chain.ProcessBlock(bmsg.block, behaviorFlags)
+	_, isOrphan, err := sm.chain.ProcessBlock(bmsg.block, nil, behaviorFlags)
 	if err != nil {
 		// When the error is a rule error, it means the block was simply
 		// rejected as opposed to something actually going wrong, so logger
@@ -820,26 +812,8 @@ func (sm *SyncManager) handleBlockMsg(bmsg *blockMsg) {
 
 	// Request the parents for the orphan block from the peer that sent it.
 	if isOrphan {
-		// We've just received an orphan block from a peer. In order
-		// to update the height of the peer, we try to extract the
-		// block height from the scriptSig of the coinbase transaction.
-		// Extraction is only attempted if the block's version is
-		// high enough (ver 2+).
-		header := &bmsg.block.MsgBlock().Header
-		if blockchain.ShouldHaveSerializedBlockHeight(header) {
-			coinbaseIdx := len(bmsg.block.Transactions()) - 1
-			coinbaseTx := bmsg.block.Transactions()[coinbaseIdx]
-			cbHeight, err := blockchain.ExtractCoinbaseHeight(coinbaseTx)
-			if err != nil {
-				log.Warnf("Unable to extract height from "+
-					"coinbase tx: %v", err)
-			} else {
-				log.Debugf("Extracted height of %v from "+
-					"orphan block", cbHeight)
-				heightUpdate = cbHeight
-				blkHashUpdate = blockHash
-			}
-		}
+		heightUpdate = bmsg.block.Height()
+		blkHashUpdate = blockHash
 
 		state.orphanBlocks++
 		if state.orphanBlocks % maxOrphanBlock == 0 {
@@ -1421,7 +1395,7 @@ out:
 			case processBlockMsg:
 				log.Debugf("processBlockMsg: Process block")
 				_, isOrphan, err := sm.chain.ProcessBlock(
-					msg.block, msg.flags)
+					msg.block, msg.vblock, msg.flags)
 				log.Debugf("process result %v", err)
 				if err != nil {
 					msg.reply <- processBlockResponse{
@@ -1434,8 +1408,6 @@ out:
 					isOrphan: isOrphan,
 					err:      nil,
 				}
-
-			//case processSigMsg:
 
 			case isCurrentMsg:
 				if msg.checkAccept {
@@ -1576,7 +1548,7 @@ func (sm *SyncManager) handleBlockchainNotification(notification *blockchain.Not
 			sm.txMemPool.RemoveTransaction(tx, true)
 		}
 
-		sm.sigMemPool.DisConnectSigns(block.Height())
+		sm.sigMemPool.DisConnectSigns(block.Signs(), block.Height())
 	}
 }
 
@@ -1694,9 +1666,9 @@ func (sm *SyncManager) SyncPeerID() int32 {
 
 // ProcessBlock makes use of ProcessBlock on an internal instance of a block
 // chain.
-func (sm *SyncManager) ProcessBlock(block *asiutil.Block, flags common.BehaviorFlags) (bool, error) {
+func (sm *SyncManager) ProcessBlock(block *asiutil.Block, vblock *asiutil.VBlock, flags common.BehaviorFlags) (bool, error) {
 	reply := make(chan processBlockResponse, 1)
-	sm.msgChan <- processBlockMsg{block: block, flags: flags, reply: reply}
+	sm.msgChan <- processBlockMsg{block: block, vblock: vblock, flags: flags, reply: reply}
 	response := <-reply
 	return response.isOrphan, response.err
 }
