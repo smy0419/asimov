@@ -1586,13 +1586,12 @@ func (s *PublicRpcAPI) RunTransaction(hexTx string, utxos []*rpcjson.ListUnspent
 		}
 	}
 
-	tipnode := s.cfg.Chain.GetTip()
-	stateDB, _ := state.New(tipnode.StateRoot(), s.cfg.Chain.GetStateCache())
-
 	msgBlock := &protos.MsgBlock{
-		Header:       tipnode.Header(),
 		Transactions: []*protos.MsgTx{tx},
 	}
+
+	tipnode := s.cfg.Chain.GetTip()
+	stateDB, _ := state.New(tipnode.StateRoot(), s.cfg.Chain.GetStateCache())
 
 	fee, _, _ := blockchain.CheckTransactionInputs(asiutil.NewTx(tx), s.cfg.Chain.BestSnapshot().Height, view, s.cfg.Chain)
 	receipt, err, gasUsed, vtx, _ := s.cfg.Chain.ConnectTransaction(
