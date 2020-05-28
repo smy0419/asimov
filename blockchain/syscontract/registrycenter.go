@@ -150,9 +150,9 @@ func (m *Manager) IsLimit(block *asiutil.Block,
 	}
 	limit := m.isLimit(block, stateDB, asset)
 
-	height := block.Height()
-	if limit == 0 && height > 0 {
+	if limit == 0 && block.MsgBlock().Header.PrevBlock == m.chain.BestHash() {
 		m.assetsUnrestrictedCache[*asset] = struct{}{}
+		height := block.Height()
 		m.assetsUnrestrictedBlockCache[height] = append(m.assetsUnrestrictedBlockCache[height], *asset)
 	}
 

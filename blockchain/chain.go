@@ -2282,6 +2282,10 @@ func (b *BlockChain) BestSnapshot() *BestState {
 	return snapshot
 }
 
+func (b *BlockChain) BestHash() common.Hash {
+	return b.BestSnapshot().Hash
+}
+
 // FetchHeader returns the block header identified by the given hash or an error
 // if it doesn't exist.
 func (b *BlockChain) FetchHeader(hash *common.Hash) (protos.BlockHeader, error) {
