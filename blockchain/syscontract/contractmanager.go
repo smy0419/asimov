@@ -23,8 +23,9 @@ type Manager struct {
 	genesisDataCache map[common.ContractCode][]chaincfg.ContractInfo
 
 	// unrestricted assets cache
-	assetsUnrestrictedMtx   sync.Mutex
-	assetsUnrestrictedCache map[protos.Asset]struct{}
+	assetsUnrestrictedMtx        sync.Mutex
+	assetsUnrestrictedCache      map[protos.Asset]struct{}
+	assetsUnrestrictedBlockCache map[int32][]protos.Asset
 }
 
 // Init manager by genesis data.
@@ -37,6 +38,7 @@ func (m *Manager) Init(chain fvm.ChainContext, dataBytes [] byte) error {
 	m.chain = chain
 	m.genesisDataCache = cMap
 	m.assetsUnrestrictedCache = make(map[protos.Asset]struct{})
+	m.assetsUnrestrictedBlockCache = make(map[int32][]protos.Asset)
 	return nil
 }
 

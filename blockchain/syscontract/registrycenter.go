@@ -124,6 +124,21 @@ func (m *Manager) GetAssetInfoByAssetId(
 	return results, err
 }
 
+//DisconnectBlock delete unrestricted asset of cache which is in the block.
+func (m *Manager) DisconnectBlock(block *asiutil.Block) {
+	m.assetsUnrestrictedMtx.Lock()
+	defer m.assetsUnrestrictedMtx.Unlock()
+	height := block.Height()
+	assets := m.assetsUnrestrictedBlockCache[height]
+	if assets == nil {
+		return
+	}
+	for _, asset := range assets {
+		delete(m.assetsUnrestrictedCache, asset)
+	}
+	delete(m.assetsUnrestrictedBlockCache, height)
+}
+
 // IsLimit returns a number of int type by find in memory or calling system
 // contract of registry the number represents if an asset is restricted
 func (m *Manager) IsLimit(block *asiutil.Block,
@@ -135,8 +150,10 @@ func (m *Manager) IsLimit(block *asiutil.Block,
 	}
 	limit := m.isLimit(block, stateDB, asset)
 
-	if limit == 0 {
+	height := block.Height()
+	if limit == 0 && height > 0 {
 		m.assetsUnrestrictedCache[*asset] = struct{}{}
+		m.assetsUnrestrictedBlockCache[height] = append(m.assetsUnrestrictedBlockCache[height], *asset)
 	}
 
 	return limit

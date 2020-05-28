@@ -1005,6 +1005,8 @@ func (b *BlockChain) reorganizeChain(detachNodes, attachNodes *list.List) error 
 		detachSpentTxOuts = append(detachSpentTxOuts, stxos)
 		detachVBlocks = append(detachVBlocks, vblock)
 
+		b.contractManager.DisconnectBlock(block)
+
 		err = disconnectTransactions(view, b.db, block, stxos, vblock)
 		if err != nil {
 			return err
