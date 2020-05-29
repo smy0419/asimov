@@ -1009,6 +1009,7 @@ func (b *BlockChain) reorganizeChain(detachNodes, attachNodes *list.List) error 
 		if err != nil {
 			return err
 		}
+		b.contractManager.DisconnectBlock(block)
 
 		newBest = n.parent
 	}
