@@ -24,7 +24,7 @@ type Manager struct {
 
 	// unrestricted assets cache
 	assetsUnrestrictedMtx        sync.Mutex
-	assetsUnrestrictedCache      map[protos.Asset]struct{}
+	assetsUnrestrictedCache      map[protos.Asset]*common.Hash
 	assetsUnrestrictedBlockCache map[int32][]protos.Asset
 }
 
@@ -37,7 +37,7 @@ func (m *Manager) Init(chain fvm.ChainContext, dataBytes [] byte) error {
 	}
 	m.chain = chain
 	m.genesisDataCache = cMap
-	m.assetsUnrestrictedCache = make(map[protos.Asset]struct{})
+	m.assetsUnrestrictedCache = make(map[protos.Asset]*common.Hash)
 	m.assetsUnrestrictedBlockCache = make(map[int32][]protos.Asset)
 	return nil
 }

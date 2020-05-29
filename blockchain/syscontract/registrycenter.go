@@ -17,6 +17,7 @@ import (
 	"math/big"
 )
 
+var mainAsset = *protos.NewAsset(protos.DivisibleAsset, protos.DefaultOrgId, protos.DefaultCoinId)
 var registryCenterAddress = vm.ConvertSystemContractAddress(common.RegistryCenter)
 
 // GetContractAddressByAsset returns organization addresses by calling system contract of registry
@@ -134,7 +135,7 @@ func (m *Manager) DisconnectBlock(block *asiutil.Block) {
 		return
 	}
 	for _, asset := range assets {
-		delete(m.assetsUnrestrictedCache, asset)
+		m.assetsUnrestrictedCache[asset] = block.Hash()
 	}
 	delete(m.assetsUnrestrictedBlockCache, height)
 }
@@ -143,15 +144,23 @@ func (m *Manager) DisconnectBlock(block *asiutil.Block) {
 // contract of registry the number represents if an asset is restricted
 func (m *Manager) IsLimit(block *asiutil.Block,
 	stateDB vm.StateDB, asset *protos.Asset) int {
+
+	if *asset == mainAsset {
+		return -1
+	}
+
 	m.assetsUnrestrictedMtx.Lock()
 	defer m.assetsUnrestrictedMtx.Unlock()
-	if _, ok := m.assetsUnrestrictedCache[*asset]; ok {
+	hash, ok := m.assetsUnrestrictedCache[*asset]
+	if ok && hash == nil {
 		return 0
 	}
-	limit := m.isLimit(block, stateDB, asset)
 
-	if limit == 0 && block.MsgBlock().Header.PrevBlock == m.chain.BestHash() {
-		m.assetsUnrestrictedCache[*asset] = struct{}{}
+	limit := m.isLimit(block, stateDB, asset)
+	if limit == 0 &&
+		block.MsgBlock().Header.PrevBlock == m.chain.BestHash() &&
+		(hash == nil || *hash != *block.Hash()) {
+		m.assetsUnrestrictedCache[*asset] = nil
 		height := block.Height()
 		m.assetsUnrestrictedBlockCache[height] = append(m.assetsUnrestrictedBlockCache[height], *asset)
 	}
