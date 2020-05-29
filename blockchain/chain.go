@@ -1218,7 +1218,9 @@ func (b *BlockChain) updateFees(block *asiutil.Block) {
 //    This is useful when using checkpoints.
 //
 // This function MUST be called with the chain state lock held (for writes).
-func (b *BlockChain) connectBestChain(node *blockNode, block *asiutil.Block, vblock *asiutil.VBlock, flags common.BehaviorFlags) (bool, error) {
+func (b *BlockChain) connectBestChain(node *blockNode, block *asiutil.Block, vblock *asiutil.VBlock,
+	receipts types.Receipts, logs []*types.Log,
+	flags common.BehaviorFlags) (bool, error) {
 	fastAdd := flags&common.BFFastAdd == common.BFFastAdd
 	flushIndexState := func() {
 		// Intentionally ignore errors writing updated node status to DB. If
@@ -1255,12 +1257,10 @@ func (b *BlockChain) connectBestChain(node *blockNode, block *asiutil.Block, vbl
 		view.SetBestHash(parentHash)
 		stxos := make([]txo.SpentTxOut, 0, countSpentOutputs(block) + countVtxSpentOutpus(vblock))
 
-		var receipts types.Receipts
-		var allLogs []*types.Log
 		var err error
 		if !fastAdd {
 			var msgvblock protos.MsgVBlock
-			receipts, allLogs, err = b.checkConnectBlock(node, block, view, &stxos, &msgvblock)
+			receipts, logs, err = b.checkConnectBlock(node, block, view, &stxos, &msgvblock)
 			if err == nil {
 				b.index.SetStatusFlags(node, statusValid)
 			} else if _, ok := err.(RuleError); ok {
@@ -1296,7 +1296,7 @@ func (b *BlockChain) connectBestChain(node *blockNode, block *asiutil.Block, vbl
 		}
 
 		// Connect the block to the main chain.
-		err = b.connectBlock(node, block, view, stxos, vblock, receipts, allLogs)
+		err = b.connectBlock(node, block, view, stxos, vblock, receipts, logs)
 		if err != nil {
 			// If we got hit with a rule error, then we'll mark
 			// that status of the block as invalid and flush the
