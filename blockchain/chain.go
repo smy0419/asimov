@@ -1005,8 +1005,6 @@ func (b *BlockChain) reorganizeChain(detachNodes, attachNodes *list.List) error 
 		detachSpentTxOuts = append(detachSpentTxOuts, stxos)
 		detachVBlocks = append(detachVBlocks, vblock)
 
-		b.contractManager.DisconnectBlock(block)
-
 		err = disconnectTransactions(view, b.db, block, stxos, vblock)
 		if err != nil {
 			return err
@@ -2281,10 +2279,6 @@ func (b *BlockChain) BestSnapshot() *BestState {
 	snapshot := b.stateSnapshot
 	b.stateLock.RUnlock()
 	return snapshot
-}
-
-func (b *BlockChain) BestHash() common.Hash {
-	return b.BestSnapshot().Hash
 }
 
 // FetchHeader returns the block header identified by the given hash or an error

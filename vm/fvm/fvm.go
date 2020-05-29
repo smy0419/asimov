@@ -25,7 +25,6 @@ type ChainContext interface {
 	GetTemplateInfo(contractAddr []byte, gas uint64, block *asiutil.Block, stateDB fvm.StateDB, chainConfig *params.ChainConfig)(uint16, string, uint64)
 	FetchTemplate(txs map[common.Hash]txo.TxMark, hash *common.Hash) (uint16, []byte, []byte, []byte, []byte, error)
 	BlockHashByHeight(int32) (*common.Hash, error)
-	BestHash() common.Hash
 }
 
 // NewFVMContext creates a new context of FVM.
