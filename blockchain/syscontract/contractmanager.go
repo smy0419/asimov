@@ -7,10 +7,12 @@ package syscontract
 import (
 	"encoding/json"
 	"github.com/AsimovNetwork/asimov/ainterface"
+	"github.com/AsimovNetwork/asimov/asiutil"
 	"github.com/AsimovNetwork/asimov/chaincfg"
 	"github.com/AsimovNetwork/asimov/common"
 	"github.com/AsimovNetwork/asimov/protos"
 	"github.com/AsimovNetwork/asimov/vm/fvm"
+	"github.com/AsimovNetwork/asimov/vm/fvm/core/vm"
 	"sync"
 )
 
@@ -23,9 +25,9 @@ type Manager struct {
 	genesisDataCache map[common.ContractCode][]chaincfg.ContractInfo
 
 	// unrestricted assets cache
-	assetsUnrestrictedMtx        sync.Mutex
-	assetsUnrestrictedCache      map[protos.Asset]*common.Hash
-	assetsUnrestrictedBlockCache map[int32][]protos.Asset
+	assetsUnrestrictedMtx   sync.Mutex
+	assetsUnrestrictedCache map[protos.Asset]struct{}
+	checkLimit  func(block *asiutil.Block, stateDB vm.StateDB, asset *protos.Asset) int
 }
 
 // Init manager by genesis data.
@@ -37,9 +39,18 @@ func (m *Manager) Init(chain fvm.ChainContext, dataBytes [] byte) error {
 	}
 	m.chain = chain
 	m.genesisDataCache = cMap
-	m.assetsUnrestrictedCache = make(map[protos.Asset]*common.Hash)
-	m.assetsUnrestrictedBlockCache = make(map[int32][]protos.Asset)
+	m.assetsUnrestrictedCache = make(map[protos.Asset]struct{})
+	m.checkLimit = m.isLimit
 	return nil
+}
+
+func (m *Manager) IsLimitInCache(asset *protos.Asset) bool {
+	m.assetsUnrestrictedMtx.Lock()
+	defer m.assetsUnrestrictedMtx.Unlock()
+	if _, ok := m.assetsUnrestrictedCache[*asset]; ok {
+		return true
+	}
+	return false
 }
 
 // Get latest contract by height.

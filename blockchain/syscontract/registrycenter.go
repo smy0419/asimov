@@ -17,7 +17,6 @@ import (
 	"math/big"
 )
 
-var mainAsset = *protos.NewAsset(protos.DivisibleAsset, protos.DefaultOrgId, protos.DefaultCoinId)
 var registryCenterAddress = vm.ConvertSystemContractAddress(common.RegistryCenter)
 
 // GetContractAddressByAsset returns organization addresses by calling system contract of registry
@@ -125,44 +124,24 @@ func (m *Manager) GetAssetInfoByAssetId(
 	return results, err
 }
 
-//DisconnectBlock delete unrestricted asset of cache which is in the block.
-func (m *Manager) DisconnectBlock(block *asiutil.Block) {
-	m.assetsUnrestrictedMtx.Lock()
-	defer m.assetsUnrestrictedMtx.Unlock()
-	height := block.Height()
-	assets := m.assetsUnrestrictedBlockCache[height]
-	if assets == nil {
-		return
-	}
-	for _, asset := range assets {
-		m.assetsUnrestrictedCache[asset] = block.Hash()
-	}
-	delete(m.assetsUnrestrictedBlockCache, height)
-}
-
 // IsLimit returns a number of int type by find in memory or calling system
 // contract of registry the number represents if an asset is restricted
 func (m *Manager) IsLimit(block *asiutil.Block,
 	stateDB vm.StateDB, asset *protos.Asset) int {
 
-	if *asset == mainAsset {
+	if *asset == asiutil.AsimovAsset {
 		return -1
 	}
 
-	m.assetsUnrestrictedMtx.Lock()
-	defer m.assetsUnrestrictedMtx.Unlock()
-	hash, ok := m.assetsUnrestrictedCache[*asset]
-	if ok && hash == nil {
+	if m.IsLimitInCache(asset) {
 		return 0
 	}
+	limit := m.checkLimit(block, stateDB, asset)
 
-	limit := m.isLimit(block, stateDB, asset)
-	if limit == 0 &&
-		block.MsgBlock().Header.PrevBlock == m.chain.BestHash() &&
-		(hash == nil || *hash != *block.Hash()) {
-		m.assetsUnrestrictedCache[*asset] = nil
-		height := block.Height()
-		m.assetsUnrestrictedBlockCache[height] = append(m.assetsUnrestrictedBlockCache[height], *asset)
+	if limit == 0 && block.IsSigned() {
+		m.assetsUnrestrictedMtx.Lock()
+		defer m.assetsUnrestrictedMtx.Unlock()
+		m.assetsUnrestrictedCache[*asset] = struct{}{}
 	}
 
 	return limit
@@ -239,4 +218,11 @@ func (m *Manager) IsSupport(block *asiutil.Block,
 	}
 
 	return support, gasLimit - common.SupportCheckGas + leftOverGas + leftOverGas2 - common.ReadOnlyGas
+}
+
+//DisconnectBlock delete unrestricted asset of cache which is in the block.
+func (m *Manager) DisconnectBlock(block *asiutil.Block) {
+	m.assetsUnrestrictedMtx.Lock()
+	defer m.assetsUnrestrictedMtx.Unlock()
+	m.assetsUnrestrictedCache = make(map[protos.Asset]struct{})
 }
