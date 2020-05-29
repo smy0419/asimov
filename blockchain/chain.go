@@ -1397,7 +1397,7 @@ func (b *BlockChain) ConnectTransaction(block *asiutil.Block, txidx int, view *t
 				}
 				if snapshot >= 0 {
 					stateDB.RevertToSnapshot(snapshot)
-					log.Error("handle vtx revert", block.Height(), txidx, snapshot,err)
+					log.Error("handle vtx revert", block.Height(), txidx, snapshot)
 				}
 				err = nil
 				executeVMFailed = true
