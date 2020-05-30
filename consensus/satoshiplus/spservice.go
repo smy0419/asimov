@@ -32,6 +32,7 @@ type SPService struct {
 	chainTipChan chan ainterface.BlockNode
 	chainTip   ainterface.BlockNode
 	mineParam  *MineParam
+	topHeight  int32
 }
 
 type MineParam struct {
@@ -382,9 +383,6 @@ func (s *SPService) handleBlockchainNotification(notification *blockchain.Notifi
 	switch notification.Type {
 	// A block has been connected to the main block chain.
 	case blockchain.NTBlockConnected:
-		fallthrough
-	// A block has been disconnected from the main block chain.
-	case blockchain.NTBlockDisconnected:
 		dataList, ok := notification.Data.([]interface{})
 		if !ok || len(dataList) < 3 {
 			log.Warnf("Chain notification need a block node.")
@@ -395,6 +393,10 @@ func (s *SPService) handleBlockchainNotification(notification *blockchain.Notifi
 			log.Warnf("Chain notification need a block node at the second position.")
 			break
 		}
+		if node.Height() <= s.topHeight {
+			return
+		}
+		s.topHeight = node.Height()
 		// clear chainTipChan if exist
 		select {
 		case <-s.chainTipChan:
