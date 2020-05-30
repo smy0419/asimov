@@ -169,7 +169,7 @@ func (s *SPService) initializeConsensus() error {
 		s.context.Slot = slot
 		s.context.RoundStartTime = roundStartTime
 	}
-	s.resetRoundInterval(s.context.Round)
+	s.resetRoundInterval()
 	s.chainTip = s.config.Chain.GetTip()
 
 	s.resetTimer(true, true)
@@ -205,43 +205,42 @@ func (s *SPService) checkTurn(slot, round int64, verbose bool) bool {
 }
 
 // reset round interval of context, round interval need be reset when round change.
-func (s *SPService) resetRoundInterval(round int64) bool {
-	roundInterval := s.config.RoundManager.GetRoundInterval(round)
+func (s *SPService) resetRoundInterval() bool {
+	roundInterval := s.config.RoundManager.GetRoundInterval(s.context.Round)
 	if roundInterval == 0 {
 		log.Errorf("[handleBlockTimeout] failed to adjust time")
 		return false
 	}
-	log.Infof("Reset round interval, round %d, block interval %f", round, float64(roundInterval)/float64(chaincfg.ActiveNetParams.RoundSize))
+	log.Infof("Reset round interval, round %d, block interval %f", s.context.Round, float64(roundInterval)/float64(chaincfg.ActiveNetParams.RoundSize))
 	s.context.RoundInterval = roundInterval
 	return true
 }
 
 // when the it turns to be a validator, try to generate a new block
 func (s *SPService) handleBlockTimeout() {
-	// slot control
-	slot := s.context.Slot + 1
-	if slot >= int64(chaincfg.ActiveNetParams.RoundSize) {
+	round, slot, _, _ := s.getRoundInfo(s.context.RoundStartTime, s.context.Round, time.Now().Unix())
+	if round > s.context.Round {
 		return
 	}
 	s.context.Slot = slot
-	isTurn := s.checkTurn(s.context.Slot, s.context.Round, false)
+	isTurn := s.checkTurn(slot, round, false)
 	s.resetTimer(true, false)
 	if !isTurn {
 		s.tryMineNextBlock()
 		return
 	}
+	// milliseconds
 	blockInterval := float64(s.GetRoundInterval()) * 1000 / float64(chaincfg.ActiveNetParams.RoundSize)
-	s.processBlock(time.Now().Unix(), s.context.Round, s.context.Slot, blockInterval)
+	s.processBlock(time.Now().Unix(), round, slot, blockInterval)
 }
 
 func (s *SPService) handleRoundTimeout() {
 	// round control
-	newRound := s.context.Round + 1
 	s.context.Slot = 0
-	s.context.Round = newRound
-	s.resetRoundInterval(newRound)
+	s.context.Round = s.context.Round + 1
+	s.resetRoundInterval()
 	s.context.RoundStartTime = s.context.RoundStartTime + s.context.RoundInterval
-	isTurn := s.checkTurn(s.context.Slot, s.context.Round, true)
+	isTurn := s.checkTurn(0, s.context.Round, true)
 	s.resetTimer(true, true)
 	if !isTurn {
 		s.tryMineNextBlock()
@@ -259,8 +258,11 @@ func (s *SPService) handleNewBlock(chainTip ainterface.BlockNode) {
 func (s *SPService) tryMineNextBlock()  {
 	slot, round := s.context.Slot + 1, s.context.Round
 	if slot == int64(chaincfg.ActiveNetParams.RoundSize) {
-		slot = 0
-		round ++
+		return
+	}
+	_, slotStd, _, _ := s.getRoundInfo(s.context.RoundStartTime, s.context.Round, time.Now().Unix())
+	if slot - slotStd > 1 {
+		return
 	}
 	chainTip := s.chainTip
 	if chainTip.Round() == uint32(s.context.Round) && chainTip.Slot() == uint16(s.context.Slot) {
@@ -359,15 +361,16 @@ func (s *SPService) getRoundInfo(roundTime int64, round int64, targetTime int64)
 }
 
 // reset blockTimer.
-func (s *SPService) resetTimer(block bool, round bool) {
-	if block {
-		d := time.Duration(int64(s.context.Slot+1)*s.context.RoundInterval) * time.Second / time.Duration(chaincfg.ActiveNetParams.RoundSize)
-		offset := time.Unix(s.context.RoundStartTime, 0).Add(d).Sub(time.Now())
+func (s *SPService) resetTimer(blockReset bool, roundReset bool) {
+	_, slot, roundStartTime, _ := s.getRoundInfo(s.context.RoundStartTime, s.context.Round, time.Now().Unix())
+	if blockReset {
+		d := time.Duration((slot+1)*s.context.RoundInterval) * time.Second / time.Duration(chaincfg.ActiveNetParams.RoundSize)
+		offset := time.Unix(roundStartTime, 0).Add(d).Sub(time.Now())
 		s.blockTimer.Reset(offset)
 	}
-	if round {
+	if roundReset {
 		d := time.Duration(s.context.RoundInterval) * time.Second
-		offset := time.Unix(s.context.RoundStartTime, 0).Add(d).Sub(time.Now())
+		offset := time.Unix(roundStartTime, 0).Add(d).Sub(time.Now())
 		s.roundTimer.Reset(offset)
 		log.Info("Round reset", int(offset))
 	}
