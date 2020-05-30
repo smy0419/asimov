@@ -161,10 +161,6 @@ func ContractRegistryCenter_RegisterOrganizationFunction() (string) {
 	return "registerOrganization"
 }
 
-func ContractRegistryCenter_CanTransferRestrictedAssetFunction() (string) {
-	return "canTransferRestrictedAsset"
-}
-
 func ContractRegistryCenter_UpdateOrganizationStatusFunction() (string) {
 	return "updateOrganizationStatus"
 }
@@ -189,12 +185,12 @@ func ContractRegistryCenter_RenameOrganizationFunction() (string) {
 	return "renameOrganization"
 }
 
-func ContractRegistryCenter_CanTransferFunction() (string) {
-	return "canTransfer"
-}
-
 func ContractRegistryCenter_MintAssetFunction() (string) {
 	return "mintAsset"
+}
+
+func ContractRegistryCenter_GetOrganizationAddressByIdFunction() (string) {
+	return "getOrganizationAddressById"
 }
 
 func ContractRegistryCenter_CloseOrganizationFunction() (string) {
@@ -285,18 +281,6 @@ func ContractValidatorCommittee_GetAssetFeeListFunction() (string) {
 	return "getAssetFeeList"
 }
 
-func ContractValidatorCommittee_TestGetRoundParamsFunction() (string) {
-	return "testGetRoundParams"
-}
-
-func ContractValidatorCommittee_TestGetProposalDetailFunction() (string) {
-	return "testGetProposalDetail"
-}
-
-func ContractValidatorCommittee_TestUpdateValidatorBlocksFunction() (string) {
-	return "testUpdateValidatorBlocks"
-}
-
 func ContractValidatorCommittee_ConfigureFunctionRoleSuperFunction() (string) {
 	return "configureFunctionRoleSuper"
 }
@@ -323,10 +307,6 @@ func ContractValidatorCommittee_StartNewRoundFunction() (string) {
 
 func ContractValidatorCommittee_GetRoundLastUpdateHeightFunction() (string) {
 	return "getRoundLastUpdateHeight"
-}
-
-func ContractValidatorCommittee_TestUpdateRoundLengthFunction() (string) {
-	return "testUpdateRoundLength"
 }
 
 func ContractValidatorCommittee_SignupFunction() (string) {

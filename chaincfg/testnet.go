@@ -8,13 +8,6 @@ import (
 	"github.com/AsimovNetwork/asimov/common"
 )
 
-// Asimov coin assetid
-
-// testnetGenesisHash is the hash of the first block in the block chain for the main
+// testnetGenesisHash is the hash of the first block in the block chain for the testnet
 // network (genesis block).
-var testnetGenesisHash = common.Hash([common.HashLength]byte{
-	0xe7, 0x90, 0x2b, 0x5f, 0x58, 0x39, 0x91, 0x7c,
-	0xea, 0xe1, 0x30, 0x3a, 0x34, 0xb3, 0x3d, 0x0f,
-	0x70, 0x2b, 0x09, 0x2c, 0x4c, 0xa5, 0xd1, 0x05,
-	0xc7, 0x0f, 0xa7, 0xcb, 0x8d, 0xfa, 0xf3, 0xb5,
-})
+var testnetGenesisHash = common.HexToHash("cccd0b9f9eff7443bcaebb66e6b8632e75089d2cb8ea711cc08eea53bac99965")

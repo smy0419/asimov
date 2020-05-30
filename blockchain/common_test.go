@@ -14,6 +14,7 @@ import (
 	"github.com/AsimovNetwork/asimov/ainterface"
 	"github.com/AsimovNetwork/asimov/asiutil"
 	"github.com/AsimovNetwork/asimov/asiutil/vrf"
+	"github.com/AsimovNetwork/asimov/blockchain/syscontract"
 	"github.com/AsimovNetwork/asimov/blockchain/txo"
 	"github.com/AsimovNetwork/asimov/chaincfg"
 	"github.com/AsimovNetwork/asimov/common"
@@ -30,10 +31,10 @@ import (
 	"github.com/AsimovNetwork/asimov/vm/fvm/core/types"
 	"github.com/AsimovNetwork/asimov/vm/fvm/core/vm"
 	"github.com/AsimovNetwork/asimov/vm/fvm/params"
+	"math"
 	"math/big"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -62,6 +63,8 @@ type ManagerTmp struct {
 	chain fvm.ChainContext
 	//  genesis transaction data cache
 	genesisDataCache map[common.ContractCode][]chaincfg.ContractInfo
+	// unrestricted assets cache
+	assetsUnrestrictedCache map[protos.Asset]struct{}
 }
 
 // Init manager by genesis data.
@@ -73,6 +76,7 @@ func (m *ManagerTmp) Init(chain fvm.ChainContext, dataBytes [] byte) error {
 	}
 	m.chain = chain
 	m.genesisDataCache = cMap
+	m.assetsUnrestrictedCache = make(map[protos.Asset]struct{})
 	return nil
 }
 
@@ -88,6 +92,10 @@ func (m *ManagerTmp) GetActiveContractByHeight(height int32, delegateAddr common
 		}
 	}
 	return nil
+}
+
+func (m *ManagerTmp) DisconnectBlock(block *asiutil.Block) {
+	m.assetsUnrestrictedCache = make(map[protos.Asset]struct{})
 }
 
 func NewContractManagerTmp() ainterface.ContractManager {
@@ -106,13 +114,14 @@ func (m *ManagerTmp) GetSignedUpValidators(
 
 	gas := uint64(common.SystemContractReadOnlyGas)
 	officialAddr := chaincfg.OfficialAddress
-	contract := m.GetActiveContractByHeight(block.Height(), common.ConsensusSatoshiPlus)
+	contract := m.GetActiveContractByHeight(block.Height(), consensus)
 	if contract == nil {
-		errStr := fmt.Sprintf("Failed to get active contract %s, %d", common.ConsensusSatoshiPlus, block.Height())
+		errStr := fmt.Sprintf("Failed to get active contract %s, %d", consensus, block.Height())
 		log.Error(errStr)
 		panic(errStr)
 	}
-	proxyAddr, abi := vm.ConvertSystemContractAddress(common.ConsensusSatoshiPlus), contract.AbiInfo
+	proxyAddr, abi := vm.ConvertSystemContractAddress(consensus), contract.AbiInfo
+
 	funcName := common.ContractConsensusSatoshiPlus_GetSignupValidatorsFunction()
 	runCode, err := fvm.PackFunctionArgs(abi, funcName, miners)
 	result, _, err := fvm.CallReadOnlyFunction(officialAddr, block, m.chain, stateDB, chainConfig,
@@ -122,11 +131,11 @@ func (m *ManagerTmp) GetSignedUpValidators(
 		return nil, nil, err
 	}
 
-	validators := make([]common.Address,0)
-	heights := make([]*big.Int,0)
-	outData := []interface {}{
+	validators := make([]common.Address, 0)
+	rounds := make([]*big.Int, 0)
+	outData := []interface{}{
 		&validators,
-		&heights,
+		&rounds,
 	}
 
 	err = fvm.UnPackFunctionResult(abi, &outData, funcName, result)
@@ -135,19 +144,19 @@ func (m *ManagerTmp) GetSignedUpValidators(
 		return nil, nil, err
 	}
 
-	if len(validators) != len(heights) || len(miners) != len(heights) {
+	if len(validators) != len(rounds) || (miners != nil && len(miners) != len(rounds)) {
 		errStr := "get signed up validators failed, length of validators does not match length of height"
 		log.Errorf(errStr)
-		return nil, nil, errors.New(errStr)
+		return nil, nil, common.AssertError(errStr)
 	}
 
-	height32 := make([]uint32, len(heights))
-	for i, h := range heights {
-		height := uint32(h.Int64())
-		height32[i] = height
+	round32 := make([]uint32, len(rounds))
+	for i, h := range rounds {
+		round := uint32(h.Uint64())
+		round32[i] = round
 	}
 
-	return validators, height32, nil
+	return validators, round32, nil
 }
 
 
@@ -334,7 +343,7 @@ func (m *ManagerTmp) GetTemplates(
 		rejectCount := *((*outType)[4]).(*uint8)
 		reviewers := *((*outType)[5]).(*uint8)
 		status := *((*outType)[6]).(*uint8)
-		if status != TEMPLATE_STATUS_NOTEXIST {
+		if status != syscontract.TEMPLATE_STATUS_NOTEXIST {
 			template = append(template, ainterface.TemplateWarehouseContent{name, key, createTime,
 			approveCount, rejectCount, reviewers, status})
 		}
@@ -387,7 +396,7 @@ func (m *ManagerTmp) GetTemplate(
 	rejectCount := *((*outType)[4]).(*uint8)
 	reviewers := *((*outType)[5]).(*uint8)
 	status := *((*outType)[6]).(*uint8)
-	if status == TEMPLATE_STATUS_NOTEXIST {
+	if status == syscontract.TEMPLATE_STATUS_NOTEXIST {
 		return ainterface.TemplateWarehouseContent{}, false, leftOvergas
 	}
 	return ainterface.TemplateWarehouseContent{name, key,
@@ -401,7 +410,7 @@ func (m *ManagerTmp) GetTemplate(
 func (m *ManagerTmp) GetFees(
 	block *asiutil.Block,
 	stateDB vm.StateDB,
-	chainConfig *params.ChainConfig) (map[protos.Assets]int32, error, uint64) {
+	chainConfig *params.ChainConfig) (map[protos.Asset]int32, error) {
 
 	officialAddr := chaincfg.OfficialAddress
 	contract := m.GetActiveContractByHeight(block.Height(), common.ValidatorCommittee)
@@ -415,12 +424,12 @@ func (m *ManagerTmp) GetFees(
 	// feelist func
 	feelistFunc := common.ContractValidatorCommittee_GetAssetFeeListFunction()
 	runCode, err := fvm.PackFunctionArgs(abi, feelistFunc)
-	result, leftOvergas, err := fvm.CallReadOnlyFunction(officialAddr, block, m.chain, stateDB, chainConfig,
+	result, _, err := fvm.CallReadOnlyFunction(officialAddr, block, m.chain, stateDB, chainConfig,
 		common.SystemContractReadOnlyGas,
 		proxyAddr, runCode)
 	if err != nil {
 		log.Errorf("Get contract templates failed, error: %s", err)
-		return nil, err, leftOvergas
+		return nil, err
 	}
 	assets := make([]*big.Int,0)
 	height := make([]*big.Int,0)
@@ -431,58 +440,67 @@ func (m *ManagerTmp) GetFees(
 	err = fvm.UnPackFunctionResult(abi, &outData, feelistFunc, result)
 	if err != nil {
 		log.Errorf("Get fee list failed, error: %s", err)
-		return nil, err, leftOvergas
+		return nil, err
 	}
 	if len(assets) != len(height) {
-		errStr := "Get fee list failed, length of assets does not match length of height"
+		errStr := "Get fee list failed, length of asset does not match length of height"
 		log.Errorf(errStr)
-		return nil, errors.New(errStr), leftOvergas
+		return nil, errors.New(errStr)
 	}
 
-	fees := make(map[protos.Assets]int32)
+	fees := make(map[protos.Asset]int32)
 	for i := 0; i < len(assets); i++ {
 		pAssets := protos.AssetFromBytes(assets[i].Bytes())
 		fees[*pAssets] = int32(height[i].Int64())
 	}
 
-	return fees, nil, leftOvergas
+	return fees, nil
 }
 
+// IsLimit returns a number of int type by find in memory or calling system
+// contract of registry the number represents if an asset is restricted
 func (m *ManagerTmp) IsLimit(block *asiutil.Block,
-	stateDB vm.StateDB, assets *protos.Assets) int {
-	officialAddr := chaincfg.OfficialAddress
-	_, organizationId, assetIndex := assets.AssetsFields()
-	contract := m.GetActiveContractByHeight(block.Height(), common.RegistryCenter)
-	if contract == nil {
-		errStr := fmt.Sprintf("Failed to get active contract %s, %d", common.RegistryCenter, block.Height())
-		log.Error(errStr)
-		panic(errStr)
+	stateDB vm.StateDB, asset *protos.Asset) int {
+	if _, ok := m.assetsUnrestrictedCache[*asset]; ok {
+		return 0
 	}
-	proxyAddr, abi := vm.ConvertSystemContractAddress(common.RegistryCenter), contract.AbiInfo
-	funcName := common.ContractRegistryCenter_IsRestrictedAssetFunction()
-	input, err := fvm.PackFunctionArgs(abi, funcName, organizationId, assetIndex)
-	if err != nil {
-		return -1
+	limit := m.isLimit(block, stateDB, asset)
+
+	if limit == 0 {
+		m.assetsUnrestrictedCache[*asset] = struct{}{}
 	}
 
+	return limit
+}
+
+// isLimit returns a number of int type by calling system contract of registry
+// the number represents if an asset is restricted
+func (m *ManagerTmp) isLimit(block *asiutil.Block,
+	stateDB vm.StateDB, asset *protos.Asset) int {
+
+	officialAddr := chaincfg.OfficialAddress
+	_, organizationId, assetIndex := asset.AssetFields()
+	registryCenterAddress := vm.ConvertSystemContractAddress(common.RegistryCenter)
+
+	input := common.PackIsRestrictedAssetInput(organizationId, assetIndex)
 	result, _, err := fvm.CallReadOnlyFunction(officialAddr, block, m.chain,
 		stateDB, chaincfg.ActiveNetParams.FvmParam,
-		common.SystemContractReadOnlyGas, proxyAddr, input)
+		common.ReadOnlyGas, registryCenterAddress, input)
 	if err != nil {
 		log.Error(err)
 		return -1
 	}
 
-	var outType = &[]interface{}{new(bool), new(bool)}
-	err = fvm.UnPackFunctionResult(abi, &outType, funcName, result)
+	existed, limit, err := common.UnPackIsRestrictedAssetResult(result)
 	if err != nil {
 		log.Error(err)
 		return -1
 	}
-	if !*((*outType)[0]).(*bool) {
+
+	if !existed {
 		return -1
 	}
-	if *((*outType)[1]).(*bool) {
+	if limit {
 		return 1
 	}
 	return 0
@@ -490,38 +508,47 @@ func (m *ManagerTmp) IsLimit(block *asiutil.Block,
 
 
 func (m *ManagerTmp) IsSupport(block *asiutil.Block,
-	stateDB vm.StateDB, gasLimit uint64, assets *protos.Assets, address []byte) (bool, uint64) {
-	_, organizationId, assetIndex := assets.AssetsFields()
-	transferAddress := common.BytesToAddress(address)
+	stateDB vm.StateDB, gasLimit uint64, asset *protos.Asset, address []byte) (bool, uint64) {
 
+	if gasLimit < common.SupportCheckGas {
+		return false, 0
+	}
+
+	// step1: prepare parameters for calling system contract to get organization address
+	_, organizationId, assetIndex := asset.AssetFields()
 	caller := chaincfg.OfficialAddress
-	contract := m.GetActiveContractByHeight(block.Height(), common.RegistryCenter)
-	if contract == nil {
-		errStr := fmt.Sprintf("Failed to get active contract %s, %d", common.RegistryCenter, block.Height())
-		log.Error(errStr)
-		panic(errStr)
-	}
-	proxyAddr, abi := vm.ConvertSystemContractAddress(common.RegistryCenter), contract.AbiInfo
-	funcName := common.ContractRegistryCenter_CanTransferRestrictedAssetFunction()
-	input, err := fvm.PackFunctionArgs(abi, funcName, organizationId, assetIndex, transferAddress)
-	if err != nil {
-		return false, gasLimit
-	}
+	registryCenterAddress := vm.ConvertSystemContractAddress(common.RegistryCenter)
 
+
+
+	input := common.PackGetOrganizationAddressByIdInput(organizationId, assetIndex)
 	result, leftOverGas, err := fvm.CallReadOnlyFunction(caller, block, m.chain,
 		stateDB, chaincfg.ActiveNetParams.FvmParam,
-		gasLimit, proxyAddr, input)
+		common.SupportCheckGas, registryCenterAddress, input)
 	if err != nil {
 		log.Error(err)
-		return false, leftOverGas
+		return false, gasLimit - common.SupportCheckGas + leftOverGas
 	}
 
-	var support bool
-	err = fvm.UnPackFunctionResult(abi, &support, funcName, result)
+	// check if return valid organization address
+	organizationAddress := common.BytesToAddress(result)
+	if common.EmptyAddressValue == organizationAddress.String() {
+		return false, gasLimit - common.SupportCheckGas + leftOverGas
+	}
+
+	// step2: call canTransfer method to check if the asset can be transfer
+	transferInput := common.PackCanTransferInput(address, assetIndex)
+
+	result2, leftOverGas2, _ := fvm.CallReadOnlyFunction(caller, block, m.chain,
+		stateDB, chaincfg.ActiveNetParams.FvmParam,
+		common.ReadOnlyGas, organizationAddress, transferInput)
+
+	support, err := common.UnPackBoolResult(result2)
 	if err != nil {
 		log.Error(err)
 	}
-	return support, leftOverGas
+
+	return support, gasLimit - common.SupportCheckGas + leftOverGas + leftOverGas2 - common.ReadOnlyGas
 }
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -531,16 +558,14 @@ type HistoryFlag byte
 const (
 	// CacheSize represents the size of cache for round validators.
 	CacheSize = 8
-
 	ExistFlag HistoryFlag = 1
-	SaveFlag  HistoryFlag = 2
-	NoneFlag  HistoryFlag = 0
 )
 var (
-	roundBucketName = []byte("roundIdx")
+	validatorBucketName = []byte("validatorIdx")
 )
 
 type RoundValidators struct {
+	round      uint32
 	blockHash  common.Hash
 	validators []*common.Address
 	weightmap  map[common.Address]uint16
@@ -548,7 +573,7 @@ type RoundValidators struct {
 
 type RoundMinerInfo struct {
 	round      uint32
-	middleTime uint32
+	lastTime   uint32
 	miners     map[string]float64
 	mapping    map[string]*ainterface.ValidatorInfo
 }
@@ -557,37 +582,47 @@ type RoundManager struct {
 	minerCollector *minersync.BtcPowerCollector
 	db             database.Transactor
 
+	// Expected count of seconds per round.
+	roundInterval int64
+
 	// round cache
 	vLock                sync.RWMutex
 	roundValidatorsCache []*RoundValidators
-	historyValidators    map[common.Address]HistoryFlag
+
+	// validatorMap and is related to handling of quick validating blocks. They are
+	// protected by a lock.
+	validatorLock sync.RWMutex
+	validatorMap  map[common.Address]HistoryFlag
 
 	rmLock  sync.RWMutex
 	rmCache []*RoundMinerInfo
 }
 
+// return true if the given validator may be valid, other wise false.
 func (m* RoundManager) HasValidator(validator common.Address) bool {
-	m.vLock.Lock()
-	defer m.vLock.Unlock()
-	if v, ok := m.historyValidators[validator]; ok {
+	m.validatorLock.RLock()
+	v, ok := m.validatorMap[validator]
+	m.validatorLock.RUnlock()
+	if ok {
 		return (v & ExistFlag) == ExistFlag
 	}
 
-	v := false
+	exist := false
 	_ = m.db.View(func(dbTx database.Tx) error {
-		bucket := dbTx.Metadata().Bucket(roundBucketName)
+		bucket := dbTx.Metadata().Bucket(validatorBucketName)
 		serializedBytes := bucket.Get(validator[:])
 		if len(serializedBytes) > 0 {
-			v = true
-			m.historyValidators[validator] = ExistFlag | SaveFlag
-		} else {
-			m.historyValidators[validator] = NoneFlag
+			exist = true
+			m.validatorLock.Lock()
+			m.validatorMap[validator] = ExistFlag
+			m.validatorLock.Unlock()
 		}
 		return nil
 	})
-	return v
+	return exist
 }
 
+// Get validators for special round.
 func (m *RoundManager) GetValidators(blockHash common.Hash, round uint32, fn ainterface.GetValidatorsCallBack) (
 	[]*common.Address, map[common.Address]uint16, error) {
 
@@ -599,7 +634,7 @@ func (m *RoundManager) GetValidators(blockHash common.Hash, round uint32, fn ain
 		if cache == nil {
 			break
 		}
-		if cache.blockHash == blockHash {
+		if cache.round == round && cache.blockHash == blockHash {
 			return cache.validators, cache.weightmap, nil
 		}
 	}
@@ -614,6 +649,7 @@ func (m *RoundManager) GetValidators(blockHash common.Hash, round uint32, fn ain
 		mineraddrs = append(mineraddrs, miner)
 	}
 	candidates := make(map[common.Address]float64)
+	totalWeight := float64(0)
 	if fn != nil {
 		signupValidators, filters, err := fn(mineraddrs)
 		if err != nil {
@@ -625,33 +661,40 @@ func (m *RoundManager) GetValidators(blockHash common.Hash, round uint32, fn ain
 			}
 			if filters[i] > 0 {
 				candidates[sv] = miners[mineraddrs[i]]
+				totalWeight += candidates[sv]
 			}
 		}
 	}
 
-	if len(candidates) == 0 {
+	if len(candidates) <= 2 {
+		candidatesLength := len(chaincfg.ActiveNetParams.GenesisCandidates) + len(candidates)
+		if math.Abs(totalWeight) < 1e-8 {
+			totalWeight = float64(candidatesLength)
+		}
 		for _, candidate := range chaincfg.ActiveNetParams.GenesisCandidates {
-			candidates[candidate] = 1
+			w, ok := candidates[candidate]
+			if ok {
+				candidates[candidate] = w + totalWeight/float64(candidatesLength)
+			} else {
+				candidates[candidate] = totalWeight/float64(candidatesLength)
+			}
 		}
 	}
 
 	validators := vrf.SelectValidators(candidates, *chaincfg.ActiveNetParams.GenesisHash, round, chaincfg.ActiveNetParams.RoundSize)
 
-	weightmap := m.setValidators(blockHash, validators)
+	weightmap := m.setValidators(round, blockHash, validators)
 	return validators, weightmap, nil
 }
 
-func (m *RoundManager) setValidators(blockHash common.Hash, validators []*common.Address) map[common.Address]uint16 {
+// set validators into the cache
+func (m *RoundManager) setValidators(round uint32,blockHash common.Hash, validators []*common.Address) map[common.Address]uint16 {
 	weightmap := make(map[common.Address]uint16)
-	var needSave []common.Address
 	for _, validator := range validators {
 		weightmap[*validator]++
-		if v, ok := m.historyValidators[*validator]; !ok || v == NoneFlag {
-			m.historyValidators[*validator] = ExistFlag
-			needSave = append(needSave, *validator)
-		}
 	}
 	newRb := &RoundValidators{
+		round:      round,
 		blockHash:  blockHash,
 		validators: validators,
 		weightmap:  weightmap,
@@ -660,26 +703,11 @@ func (m *RoundManager) setValidators(blockHash common.Hash, validators []*common
 		m.roundValidatorsCache[i], newRb = newRb, m.roundValidatorsCache[i]
 	}
 
-	if len(needSave) > 0 {
-		_ = m.db.Update(func(dbTx database.Tx) error {
-			bucket := dbTx.Metadata().Bucket(roundBucketName)
-			serializedBytes := []byte{1}
-			for _, validator := range needSave {
-				err := bucket.Put(validator[:], serializedBytes)
-				if err != nil {
-					log.Errorf("failed to save history validator ", validator.String(), err)
-				}
-			}
-			return nil
-		})
-	}
-
 	return weightmap
 }
 
+// get round miner from cache
 func (m *RoundManager) getRoundMinerFromCache(round uint32) *RoundMinerInfo {
-	m.rmLock.Lock()
-	defer m.rmLock.Unlock()
 	for i := 0; i < CacheSize; i++ {
 		cache := m.rmCache[i]
 		if cache == nil {
@@ -692,17 +720,18 @@ func (m *RoundManager) getRoundMinerFromCache(round uint32) *RoundMinerInfo {
 	return nil
 }
 
+// set round miner info into the cache.
 func (m *RoundManager) setRoundMiner(roundMiner *RoundMinerInfo) {
-	m.rmLock.Lock()
-	defer m.rmLock.Unlock()
-
 	newRoundMiner := roundMiner
 	for i := 0; i < CacheSize; i++ {
 		m.rmCache[i], newRoundMiner = newRoundMiner, m.rmCache[i]
 	}
 }
 
-func (m *RoundManager) getMinersInfo(round uint32) (*RoundMinerInfo, error) {
+// get miner info of round
+func (m *RoundManager) getRoundMiner(round uint32) (*RoundMinerInfo, error) {
+	m.rmLock.Lock()
+	defer m.rmLock.Unlock()
 	rm := m.getRoundMinerFromCache(round)
 	if rm != nil {
 		return rm, nil
@@ -726,7 +755,7 @@ func (m *RoundManager) getMinersInfo(round uint32) (*RoundMinerInfo, error) {
 	for i, miner := range minerInfos {
 		miners[miner.Address()]++
 		times[i] = int(miner.Time())
-		if i + int(chaincfg.ActiveNetParams.BtcBlocksPerRound) >= int(size) {
+		if round == 0 || i + int(chaincfg.ActiveNetParams.BtcBlocksPerRound) >= int(size) {
 			validatorTxs := miner.ValidatorTxs()
 			if len(validatorTxs) > 0 {
 				for _, tx := range validatorTxs {
@@ -740,10 +769,10 @@ func (m *RoundManager) getMinersInfo(round uint32) (*RoundMinerInfo, error) {
 			}
 		}
 	}
-	sort.Ints(times)
+	lastTime := times[len(times) - 1]
 	newRoundMiner := &RoundMinerInfo {
 		round:   round,
-		middleTime: uint32(times[size/2]),
+		lastTime: uint32(lastTime),
 		miners:  miners,
 		mapping: registerMapping,
 	}
@@ -751,8 +780,10 @@ func (m *RoundManager) getMinersInfo(round uint32) (*RoundMinerInfo, error) {
 	return newRoundMiner, nil
 }
 
+// get miners of round
+// the return value is a map (key (miner) -> value (count per collect interval))
 func (m *RoundManager) GetMinersByRound(round uint32) (map[string]float64, error) {
-	rm, err := m.getMinersInfo(round)
+	rm, err := m.getRoundMiner(round)
 	if err != nil {
 		return nil, err
 	}
@@ -760,39 +791,58 @@ func (m *RoundManager) GetMinersByRound(round uint32) (map[string]float64, error
 }
 
 func (m *RoundManager) GetHsMappingByRound(round uint32) (map[string]*ainterface.ValidatorInfo, error) {
-	rm, err := m.getMinersInfo(round)
+	rm, err := m.getRoundMiner(round)
 	if err != nil {
 		return nil, err
 	}
 	return rm.mapping, nil
 }
 
+// get special round interval
 func (m *RoundManager) GetRoundInterval(round int64) int64 {
-	return 5 * 120
+	if round <= 1 {
+		return m.roundInterval
+	}
+
+	roundMiner1, err := m.getRoundMiner(uint32(round) - 1)
+	if err != nil {
+		log.Error("Get round middle time failed", err)
+		return 0
+	}
+	roundMiner2, err := m.getRoundMiner(uint32(round))
+	if err != nil {
+		return 0
+	}
+	interval := int64(roundMiner2.lastTime-roundMiner1.lastTime)
+	if interval < common.MinBlockInterval * int64(chaincfg.ActiveNetParams.RoundSize) {
+		interval = common.MinBlockInterval * int64(chaincfg.ActiveNetParams.RoundSize)
+	}
+	if interval > common.MaxBlockInterval * int64(chaincfg.ActiveNetParams.RoundSize) {
+		interval = common.MaxBlockInterval * int64(chaincfg.ActiveNetParams.RoundSize)
+	}
+	return interval
 }
 
+// return the next round.
 func (m *RoundManager) GetNextRound(round *ainterface.Round) (*ainterface.Round, error) {
+	interval := m.GetRoundInterval(int64(round.Round) + 1)
+	if interval == 0 {
+		errStr := fmt.Sprintf("get next round error, round=%d", round.Round + 1)
+		return nil, errors.New(errStr)
+	}
+
 	newRound := &ainterface.Round{
-		Round: round.Round + 1,
-		Duration: common.DefaultBlockInterval * int64(chaincfg.ActiveNetParams.RoundSize),
+		Round:          round.Round + 1,
 		RoundStartUnix: round.RoundStartUnix + round.Duration,
+		Duration:       int64(interval),
 	}
 	return newRound, nil
 }
 
+// initialize round manager.
 func (m *RoundManager) Init(round uint32, db database.Transactor, c ainterface.IBtcClient) error {
 	m.db = db
-	err := db.Update(func(dbTx database.Tx) error {
-		_, err := dbTx.Metadata().CreateBucketIfNotExists(roundBucketName)
-		if err != nil {
-			return err
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	m.historyValidators = make(map[common.Address]HistoryFlag)
+	m.validatorMap = make(map[common.Address]HistoryFlag)
 
 	bpc := minersync.NewBtcPowerCollector(c, db)
 
@@ -802,7 +852,7 @@ func (m *RoundManager) Init(round uint32, db database.Transactor, c ainterface.I
 	}
 	height := lastround * int32(chaincfg.ActiveNetParams.BtcBlocksPerRound)
 	count := chaincfg.ActiveNetParams.CollectInterval + int32(chaincfg.ActiveNetParams.BtcBlocksPerRound)
-	_, err = bpc.Init(height, count)
+	_, err := bpc.Init(height, count)
 	if err != nil {
 		return err
 	}
@@ -823,17 +873,20 @@ func (m *RoundManager) Start() {
 }
 
 func (m *RoundManager) Halt() {
+	_ = m.minerCollector.Halt()
 }
 
+// return unique contract code which represents some consensus
 func (m *RoundManager) GetContract() common.ContractCode {
 	return common.ConsensusSatoshiPlus
 }
 
+// create a new round maganger
 func NewRoundManager() *RoundManager {
-	return &RoundManager{}
+	return &RoundManager{
+		roundInterval: int64(chaincfg.ActiveNetParams.RoundSize) * common.DefaultBlockInterval,
+	}
 }
-
-var _ ainterface.IRoundManager = (*RoundManager)(nil)
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -891,7 +944,6 @@ func (c *FakeBtcClient) GetBitcoinBlockChainInfo(result interface{}) error {
 }
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-//add only for unit test:
 func (b *BlockChain) addBlockNode(block *asiutil.Block) error {
 	prevHash := &block.MsgBlock().Header.PrevBlock
 	prevNode := b.index.LookupNode(prevHash)
@@ -1115,7 +1167,7 @@ func StandardCoinbaseScript(nextBlockHeight int32, extraNonce uint64) ([]byte, e
 }
 
 func createTestCoinbaseTx(params *chaincfg.Params, coinbaseScript []byte, nextBlockHeight int32,
-	addr common.IAddress, assets protos.Assets, amount int64, contractOut *protos.TxOut) (*asiutil.Tx, *protos.TxOut, error) {
+	addr common.IAddress, asset protos.Asset, amount int64, contractOut *protos.TxOut) (*asiutil.Tx, *protos.TxOut, error) {
 
 	var pkScript []byte
 	if addr != nil {
@@ -1156,7 +1208,7 @@ func createTestCoinbaseTx(params *chaincfg.Params, coinbaseScript []byte, nextBl
 	stdTxOut := &protos.TxOut{
 		Value:    value,
 		PkScript: pkScript,
-		Assets:   assets,
+		Asset:    asset,
 	}
 	tx.AddTxOut(stdTxOut)
 	tx.TxContract.GasLimit = common.CoinbaseTxGas
@@ -1166,7 +1218,7 @@ func createTestCoinbaseTx(params *chaincfg.Params, coinbaseScript []byte, nextBl
 //fetch utxo from blockchain or input preOut param:
 func (b *BlockChain) createNormalTx(
 	privateKey string,
-	assets protos.Assets,
+	asset protos.Asset,
 	outputAddr common.Address,
 	amount int64,
 	fees int64,
@@ -1186,9 +1238,9 @@ func (b *BlockChain) createNormalTx(
 		return nil,err
 	}
 
-	view := NewUtxoViewpoint()
+	view := txo.NewUtxoViewpoint()
 	var prevOuts *[]protos.OutPoint
-	prevOuts, err = b.FetchUtxoViewByAddressAndAsset(view, acc.Address.ScriptAddress(), &assets)
+	prevOuts, err = b.FetchUtxoViewByAddressAndAsset(view, acc.Address.ScriptAddress(), &asset)
 	if err != nil {
 		log.Errorf("createSignUpTx: FetchUtxoViewByAddress error: %v",err)
 		return nil, err
@@ -1219,7 +1271,7 @@ func (b *BlockChain) createNormalTx(
 			txMsg.AddTxOut(&protos.TxOut{
 				Value:    amount,
 				PkScript: outputPkScript,
-				Assets:   *entry.Assets(),
+				Asset:    *entry.Asset(),
 				Data:     nil,
 			})
 
@@ -1228,7 +1280,7 @@ func (b *BlockChain) createNormalTx(
 				txMsg.AddTxOut(&protos.TxOut{
 					Value:    changeValue,
 					PkScript: inputPkScript,
-					Assets:   *entry.Assets(),
+					Asset:    *entry.Asset(),
 					Data:     nil,
 				})
 			}
@@ -1268,7 +1320,7 @@ func (b *BlockChain) createNormalTx(
 				txMsg.AddTxOut(&protos.TxOut{
 					Value:    amount,
 					PkScript: outputPkScript,
-					Assets:   *entry.Assets(),
+					Asset:    *entry.Asset(),
 					Data:     nil,
 				})
 
@@ -1276,7 +1328,7 @@ func (b *BlockChain) createNormalTx(
 				txMsg.AddTxOut(&protos.TxOut{
 					Value:    changeValue,
 					PkScript: inputPkScript,
-					Assets:   *entry.Assets(),
+					Asset:    *entry.Asset(),
 					Data:     nil,
 				})
 
@@ -1315,17 +1367,17 @@ func IntToByte(num int64) []byte {
 	return buffer.Bytes()
 }
 
-func createUtxoView(utxoList []*txo.UtxoEntry, view *UtxoViewpoint, prevOutList *[]protos.OutPoint) error {
+func createUtxoView(utxoList []*txo.UtxoEntry, view *txo.UtxoViewpoint, prevOutList *[]protos.OutPoint) error {
 	if view == nil {
 		return nil
 	}
 	for i := 0; i < len(utxoList); i++ {
 		var testPoint protos.OutPoint
-		data := int64(utxoList[i].Assets().Id + uint64(utxoList[i].Assets().Property) + uint64(utxoList[i].Amount()))
+		data := int64(utxoList[i].Asset().Id + uint64(utxoList[i].Asset().Property) + uint64(utxoList[i].Amount()))
 		assetsByte := IntToByte(data)
 		testPoint.Hash = common.DoubleHashH(assetsByte)
 		testPoint.Index = uint32(i+1)
-		view.entries[testPoint] = utxoList[i]
+		view.AddEntry(testPoint, utxoList[i])
 		*prevOutList = append(*prevOutList, testPoint)
 	}
 	return nil
@@ -1379,14 +1431,14 @@ func createTxByParams(
 
 //createTestTx:create normal tx by input param, not care whether the input utxo is validate:
 func createTestTx(privString string, payAddrPkScript []byte, receiverPkScript []byte, gaslimit uint32,
-	inputAmountList []int64, inputAssetsList []*protos.Assets,
-	outputAmountList []int64, outputAssetsList []*protos.Assets) (*protos.MsgTx, map[protos.Assets]int64, *UtxoViewpoint, error) {
+	inputAmountList []int64, inputAssetsList []*protos.Asset,
+	outputAmountList []int64, outputAssetsList []*protos.Asset) (*protos.MsgTx, map[protos.Asset]int64, *txo.UtxoViewpoint, error) {
 	var err error
 	var normalTx *protos.MsgTx
-	fees := make(map[protos.Assets]int64)
-	totalInCoin := make(map[protos.Assets]int64)
-	totalOutCoin := make(map[protos.Assets]int64)
-	utxoViewPoint := NewUtxoViewpoint()
+	fees := make(map[protos.Asset]int64)
+	totalInCoin := make(map[protos.Asset]int64)
+	totalOutCoin := make(map[protos.Asset]int64)
+	utxoViewPoint := txo.NewUtxoViewpoint()
 	{
 		//create utxo list:
 		utxoList := make([]*txo.UtxoEntry, 0)
@@ -1467,7 +1519,7 @@ func medianAdjustedTime(chainState *BestState, timeSource MedianTimeSource) int6
 }
 
 
-func mergeUtxoView(viewA ainterface.IUtxoViewpoint, viewB ainterface.IUtxoViewpoint) {
+func mergeUtxoView(viewA *txo.UtxoViewpoint, viewB *txo.UtxoViewpoint) {
 	viewAEntries := viewA.Entries()
 	for outpoint, entryB := range viewB.Entries() {
 		if entryA, exists := viewAEntries[outpoint]; !exists ||
@@ -1478,7 +1530,7 @@ func mergeUtxoView(viewA ainterface.IUtxoViewpoint, viewB ainterface.IUtxoViewpo
 	}
 }
 
-func spendTransaction(utxoView ainterface.IUtxoViewpoint, tx *asiutil.Tx, height int32) error {
+func spendTransaction(utxoView *txo.UtxoViewpoint, tx *asiutil.Tx, height int32) error {
 	for _, txIn := range tx.MsgTx().TxIn {
 		entry := utxoView.LookupEntry(txIn.PreviousOutPoint)
 		if entry != nil {
@@ -1486,23 +1538,23 @@ func spendTransaction(utxoView ainterface.IUtxoViewpoint, tx *asiutil.Tx, height
 		}
 	}
 
-	utxoView.AddTxOuts(tx, height)
+	utxoView.AddTxOuts(tx.Hash(), tx.MsgTx(), false, height)
 	return nil
 }
 
-func rebuildFunder(tx *asiutil.Tx, stdTxout *protos.TxOut, fees *map[protos.Assets]int64) {
-	for assets, value := range *fees {
+func rebuildFunder(tx *asiutil.Tx, stdTxout *protos.TxOut, fees *map[protos.Asset]int64) {
+	for asset, value := range *fees {
 		if value <= 0 {
 			continue
 		}
 
-		if assets.IsIndivisible() {
+		if asset.IsIndivisible() {
 			continue
 		}
-		if assets.Equal(&asiutil.FlowCoinAsset) {
+		if asset.Equal(&asiutil.AsimovAsset) {
 			stdTxout.Value += value
 		} else {
-			tx.MsgTx().AddTxOut(protos.NewTxOut(value, stdTxout.PkScript, assets))
+			tx.MsgTx().AddTxOut(protos.NewTxOut(value, stdTxout.PkScript, asset))
 		}
 	}
 }
@@ -1513,9 +1565,8 @@ func createTestBlock(
 	round uint32,
 	slot uint16,
 	preHeight int32,
-	assets protos.Assets,
+	asset protos.Asset,
 	amount int64,
-	hasCoinBaseTx bool,
 	payAddress *common.Address,
 	txList []*asiutil.Tx,
 	preNode *blockNode) (*asiutil.Block, error) {
@@ -1530,76 +1581,77 @@ func createTestBlock(
 	ts := time.Now().Unix()
 
 	blockTxns := make([]*asiutil.Tx, 0)
-	blockUtxos := NewUtxoViewpoint()
-	allFees := make(map[protos.Assets]int64)
+	blockUtxos := txo.NewUtxoViewpoint()
+	allFees := make(map[protos.Asset]int64)
+
+	//add txlist to block:
+	for i:=0; i<len(txList); i++ {
+		utxos, err := b.FetchUtxoView(txList[i],true)
+		if err != nil {
+			log.Warnf("Unable to fetch utxo view for tx %s: %v",
+				txList[i].Hash(), err)
+			continue
+		}
+		mergeUtxoView(blockUtxos, utxos)
+	}
+
+	for j:=0; j<len(txList); j++ {
+		_, feeList, err := CheckTransactionInputs(txList[j], nextBlockHeight, blockUtxos, b)
+		if err != nil {
+			continue
+		}
+		spendTransaction(blockUtxos, txList[j], nextBlockHeight)
+		MergeFees(&allFees, feeList)
+		blockTxns = append(blockTxns, txList[j])
+	}
+
 
 	extraNonce := uint64(0)
 	coinbaseScript, err := StandardCoinbaseScript(nextBlockHeight, extraNonce)
 	if err != nil {
 		return nil, err
 	}
-	if hasCoinBaseTx {
-		var contractOut *protos.TxOut
-		if round > preNode.Round() {
-			contractOut, err = b.createCoinbaseContractOut(preNode.Round(), preNode)
-			if err != nil {
-				return nil, err
-			}
-		}
-		coinbaseTx, stdTxout, err := createTestCoinbaseTx(chaincfg.ActiveNetParams.Params,
-			coinbaseScript, nextBlockHeight, payAddress, assets, amount, contractOut)
+
+	//coinbaseTx:
+	var contractOut *protos.TxOut
+	if round > preNode.Round() {
+		contractOut, err = b.createCoinbaseContractOut(preNode.Round(), preNode)
 		if err != nil {
 			return nil, err
 		}
+	}
+	coinbaseTx, stdTxout, err := createTestCoinbaseTx(chaincfg.ActiveNetParams.Params,
+		coinbaseScript, nextBlockHeight, payAddress, asset, amount, contractOut)
+	if err != nil {
+		return nil, err
+	}
+	rebuildFunder(coinbaseTx, stdTxout, &allFees)
 
-		for i:=0; i<len(txList); i++ {
-			utxos, err := b.FetchUtxoView(txList[i],true)
-			if err != nil {
-				log.Warnf("Unable to fetch utxo view for tx %s: %v",
-					txList[i].Hash(), err)
-				continue
-			}
-			mergeUtxoView(blockUtxos, utxos)
-		}
+	// flag whether core team take reward
+	coreTeamRewardFlag := nextBlockHeight <= chaincfg.ActiveNetParams.Params.SubsidyReductionInterval ||
+		ts - chaincfg.ActiveNetParams.Params.GenesisBlock.Header.Timestamp < 86400*(365*4+1)
 
-		for j:=0; j<len(txList); j++ {
-			_, feeList, err := CheckTransactionInputs(txList[j], nextBlockHeight, blockUtxos, b)
-			if err != nil {
-				continue
-			}
-			spendTransaction(blockUtxos, txList[j], nextBlockHeight)
-			MergeFees(&allFees, feeList)
-			blockTxns = append(blockTxns, txList[j])
-		}
-
-		rebuildFunder(coinbaseTx, stdTxout, &allFees)
-
-		// flag whether core team take reward
-		coreTeamRewardFlag := nextBlockHeight <= chaincfg.ActiveNetParams.Params.SubsidyReductionInterval ||
-			ts - chaincfg.ActiveNetParams.Params.GenesisBlock.Header.Timestamp < 86400*(365*4+1)
-
-		if coreTeamRewardFlag {
-			fundationAddr := common.HexToAddress(string(common.GenesisOrganization))
-			pkScript, _ := txscript.PayToAddrScript(&fundationAddr)
-			txoutLen := len(coinbaseTx.MsgTx().TxOut)
-			for i := 0; i < txoutLen; i++ {
-				txOutAsset := coinbaseTx.MsgTx().TxOut[i].Assets
-				if !txOutAsset.IsIndivisible() {
-					value := coinbaseTx.MsgTx().TxOut[i].Value
-					coreTeamValue := int64(float64(value) * common.CoreTeamPercent)
-					if coreTeamValue > 0 {
-						coinbaseTx.MsgTx().TxOut[i].Value = value - coreTeamValue
-						coinbaseTx.MsgTx().AddTxOut(&protos.TxOut{
-							Value:    coreTeamValue,
-							PkScript: pkScript,
-							Assets:   coinbaseTx.MsgTx().TxOut[i].Assets,
-						})
-					}
+	if coreTeamRewardFlag {
+		fundationAddr := common.HexToAddress(string(common.GenesisOrganization))
+		pkScript, _ := txscript.PayToAddrScript(&fundationAddr)
+		txoutLen := len(coinbaseTx.MsgTx().TxOut)
+		for i := 0; i < txoutLen; i++ {
+			txOutAsset := coinbaseTx.MsgTx().TxOut[i].Asset
+			if !txOutAsset.IsIndivisible() {
+				value := coinbaseTx.MsgTx().TxOut[i].Value
+				coreTeamValue := int64(float64(value) * common.CoreTeamPercent)
+				if coreTeamValue > 0 {
+					coinbaseTx.MsgTx().TxOut[i].Value = value - coreTeamValue
+					coinbaseTx.MsgTx().AddTxOut(&protos.TxOut{
+						Value:    coreTeamValue,
+						PkScript: pkScript,
+						Asset:    coinbaseTx.MsgTx().TxOut[i].Asset,
+					})
 				}
 			}
 		}
-		blockTxns = append(blockTxns, coinbaseTx)
 	}
+	blockTxns = append(blockTxns, coinbaseTx)
 
 	var merkles []*common.Hash
 	if len(blockTxns) > 0 {
@@ -1644,15 +1696,14 @@ func createAndSignBlock(paramstmp chaincfg.Params,
 	epoch uint32,
 	slot uint16,
 	preHeight int32,
-	assets protos.Assets,
+	asset protos.Asset,
 	amount int64,
-	hasCoinBaseTx bool,
 	payAddress *common.Address,
 	txList []*asiutil.Tx,
 	timeAddCnt int32,
 	preNode *blockNode) (*asiutil.Block, *blockNode, error) {
 
-	block, err := createTestBlock(chain, epoch, slot, preHeight, assets, amount,hasCoinBaseTx, payAddress,txList,preNode)
+	block, err := createTestBlock(chain, epoch, slot, preHeight, asset, amount, payAddress, txList, preNode)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1667,7 +1718,7 @@ func createAndSignBlock(paramstmp chaincfg.Params,
 		gasLimit := CalcGasLimit(preNode.GasUsed(), preNode.GasLimit(), common.GasFloor, common.GasCeil)
 		block.MsgBlock().Header.GasLimit = gasLimit
 		block.MsgBlock().Header.PrevBlock = preNode.hash
-		stateRoot,gasUsed := genGasUsed(chain, block,preNode)
+		stateRoot,gasUsed := getGasUsedAndStateRoot(chain, block,preNode)
 		block.MsgBlock().Header.GasUsed = gasUsed
 		block.MsgBlock().Header.StateRoot = *stateRoot
 	}
@@ -1705,18 +1756,18 @@ func createAndSignBlock(paramstmp chaincfg.Params,
 	return block, newBestNode, nil
 }
 
-func (b *BlockChain) calcGasUsed(node *blockNode, block *asiutil.Block, view *UtxoViewpoint,
-	stxos *[]SpentTxOut, msgvblock *protos.MsgVBlock, statedb *state.StateDB) (types.Receipts, uint64, error) {
+func (b *BlockChain) calcGasUsed(node *blockNode, block *asiutil.Block, view *txo.UtxoViewpoint,
+	stxos *[]txo.SpentTxOut, msgvblock *protos.MsgVBlock, statedb *state.StateDB) (types.Receipts, uint64, error) {
 
 	// These utxo entries are needed for verification of things such as
 	// transaction inputs, counting pay-to-script-hashes, and scripts.
-	err := view.fetchInputUtxos(b.db, block)
+	err := fetchInputUtxos(view, b.db, block)
 	if err != nil {
 		return nil, 0, err
 	}
 
 	var totalGasUsed uint64
-	allFees := make(map[protos.Assets]int64)
+	allFees := make(map[protos.Asset]int64)
 	var (
 		receipts types.Receipts
 	)
@@ -1756,9 +1807,9 @@ func (b *BlockChain) calcGasUsed(node *blockNode, block *asiutil.Block, view *Ut
 }
 
 
-func genGasUsed(b *BlockChain, block *asiutil.Block, preNode *blockNode) (*common.Hash, uint64){
+func getGasUsedAndStateRoot(b *BlockChain, block *asiutil.Block, preNode *blockNode) (*common.Hash, uint64){
 
-	view := NewUtxoViewpoint()
+	view := txo.NewUtxoViewpoint()
 	view.SetBestHash(&preNode.hash)
 
 	var err error
@@ -1793,7 +1844,7 @@ func genGasUsed(b *BlockChain, block *asiutil.Block, preNode *blockNode) (*commo
 }
 
 //fetch utxo from blockchain or input preOut param:
-func (b *BlockChain) createSignUpTx(privateKey string, assets protos.Assets) (*asiutil.Tx, error ) {
+func (b *BlockChain) createSignUpTx(privateKey string, asset protos.Asset) (*asiutil.Tx, error ) {
 	fees := int64(chaincfg.DefaultAutoSignUpGasLimit)
 	if fees < 0 {
 		errStr := "createSignUpTx: fees is smaller than 0, can not gen signUpTx!"
@@ -1813,9 +1864,9 @@ func (b *BlockChain) createSignUpTx(privateKey string, assets protos.Assets) (*a
 	}
 	signUpFunc := common.ContractConsensusSatoshiPlus_SignupFunction()
 
-	view := NewUtxoViewpoint()
+	view := txo.NewUtxoViewpoint()
 	var prevOuts *[]protos.OutPoint
-	prevOuts, err = b.FetchUtxoViewByAddressAndAsset(view, acc.Address.ScriptAddress(), &assets)
+	prevOuts, err = b.FetchUtxoViewByAddressAndAsset(view, acc.Address.ScriptAddress(), &asset)
 	if err != nil {
 		log.Errorf("createSignUpTx: FetchUtxoViewByAddress error: %v",err)
 		return nil, err
@@ -1845,14 +1896,14 @@ func (b *BlockChain) createSignUpTx(privateKey string, assets protos.Assets) (*a
 	txMsg.AddTxOut(&protos.TxOut{
 		Value:    int64(0),
 		PkScript: contractPkScript,
-		Assets:   asiutil.FlowCoinAsset,
+		Asset:    asiutil.AsimovAsset,
 		Data:     Data,
 	})
 
 	txMsg.AddTxOut(&protos.TxOut{
 		Value:    entry.Amount(),
 		PkScript: payPkScript,
-		Assets:   asiutil.FlowCoinAsset,
+		Asset:    asiutil.AsimovAsset,
 		Data:     nil,
 	})
 

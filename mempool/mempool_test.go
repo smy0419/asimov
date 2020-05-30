@@ -9,21 +9,27 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/AsimovNetwork/asimov/ainterface"
-	"github.com/AsimovNetwork/asimov/common/address"
-	"reflect"
-	"runtime"
-	"strconv"
-	"sync"
-	"testing"
-	"time"
+	"github.com/AsimovNetwork/asimov/asiutil"
 	"github.com/AsimovNetwork/asimov/blockchain"
+	"github.com/AsimovNetwork/asimov/blockchain/txo"
 	"github.com/AsimovNetwork/asimov/chaincfg"
 	"github.com/AsimovNetwork/asimov/common"
+	"github.com/AsimovNetwork/asimov/common/address"
 	"github.com/AsimovNetwork/asimov/crypto"
 	"github.com/AsimovNetwork/asimov/protos"
 	"github.com/AsimovNetwork/asimov/txscript"
-	"github.com/AsimovNetwork/asimov/asiutil"
+	"reflect"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+
+const (
+	DefaultInputFee = 2100000*1000
+	DefaultGasLimit = 2100000
 )
 
 // fakeChain is used by the pool harness to provide generated test utxos and
@@ -31,7 +37,7 @@ import (
 // transactions to appear as though they are spending completely valid utxos.
 type fakeChain struct {
 	sync.RWMutex
-	utxos          ainterface.IUtxoViewpoint
+	utxos          *txo.UtxoViewpoint
 	currentHeight  int32
 	medianTimePast time.Time
 }
@@ -42,7 +48,7 @@ type fakeChain struct {
 // view can be examined for duplicate transactions.
 //
 // This function is safe for concurrent access however the returned view is NOT.
-func (s *fakeChain) FetchUtxoView(tx *asiutil.Tx, dolock bool) (ainterface.IUtxoViewpoint, error) {
+func (s *fakeChain) FetchUtxoView(tx *asiutil.Tx, dolock bool) (*txo.UtxoViewpoint, error) {
 	s.RLock()
 	defer s.RUnlock()
 
@@ -50,7 +56,7 @@ func (s *fakeChain) FetchUtxoView(tx *asiutil.Tx, dolock bool) (ainterface.IUtxo
 	// do not affect the fake chain's view.
 
 	// Add an entry for the tx itself to the new view.
-	viewpoint := blockchain.NewUtxoViewpoint()
+	viewpoint := txo.NewUtxoViewpoint()
 	prevOut := protos.OutPoint{Hash: *tx.Hash()}
 	for txOutIdx := range tx.MsgTx().TxOut {
 		prevOut.Index = uint32(txOutIdx)
@@ -103,7 +109,7 @@ func (s *fakeChain) SetMedianTimePast(mtp time.Time) {
 // CalcSequenceLock returns the current sequence lock for the passed
 // transaction associated with the fake chain instance.
 func (s *fakeChain) CalcSequenceLock(tx *asiutil.Tx,
-	view ainterface.IUtxoViewpoint) (*blockchain.SequenceLock, error) {
+	view *txo.UtxoViewpoint) (*blockchain.SequenceLock, error) {
 
 	return &blockchain.SequenceLock{
 		Seconds:     -1,
@@ -192,23 +198,25 @@ func (p *poolHarness) CreateCoinbaseTx(blockHeight int32, numOutputs uint32) (*a
 // inputs and generates the provided number of outputs by evenly splitting the
 // total input amount.  All outputs will be to the payment script associated
 // with the harness and all inputs are assumed to do the same.
-func (p *poolHarness) CreateSignedTx(inputs []spendableOutput, numOutputs uint32) (*asiutil.Tx, error) {
+func (p *poolHarness) CreateSignedTx(inputs []spendableOutput, numOutputs uint32, fee common.Amount) (*asiutil.Tx, error) {
 	// Calculate the total input amount and split it amongst the requested
 	// number of outputs.
 	var totalInput common.Amount
 	for _, input := range inputs {
 		totalInput += input.amount
 	}
+	totalInput -= fee
 	amountPerOutput := int64(totalInput) / int64(numOutputs)
 	remainder := int64(totalInput) - amountPerOutput*int64(numOutputs)
 
 	tx := protos.NewMsgTx(protos.TxVersion)
-	tx.TxContract.GasLimit = 21000
+	sequence := protos.MaxTxInSequenceNum
+	tx.TxContract.GasLimit = DefaultGasLimit
 	for _, input := range inputs {
 		tx.AddTxIn(&protos.TxIn{
 			PreviousOutPoint: input.outPoint,
 			SignatureScript:  nil,
-			Sequence:         protos.MaxTxInSequenceNum,
+			Sequence:         sequence,
 		})
 	}
 	for i := uint32(0); i < numOutputs; i++ {
@@ -280,8 +288,8 @@ func (p *poolHarness) CreateTxChain(firstOutput spendableOutput, numTxns uint32)
 	return txChain, nil
 }
 
-func CheckTransactionInputs(tx *asiutil.Tx, txHeight int32, utxoView ainterface.IUtxoViewpoint,
-	b *blockchain.BlockChain) (int64, *map[protos.Assets]int64, error) {
+func CheckTransactionInputs(tx *asiutil.Tx, txHeight int32, utxoView *txo.UtxoViewpoint,
+	b *blockchain.BlockChain) (int64, *map[protos.Asset]int64, error) {
 
 	// Coinbase transactions have no inputs.
 	if blockchain.IsCoinBase(tx) {
@@ -299,11 +307,11 @@ func CheckTransactionInputs(tx *asiutil.Tx, txHeight int32, utxoView ainterface.
 	// no more than one asset in one tx except flowAsset .
 	//var totalCoinXingIn int64
 	//var totalFlowAssetIn int64
-	totalInCoin := make(map[protos.Assets]int64)
-	//txAssets := asiutil.FlowCoinAsset
+	totalInCoin := make(map[protos.Asset]int64)
+	//txAssets := asiutil.AsimovAsset
 
 	//undivisible.
-	totalInAsset := make(map[protos.Assets]map[int64]struct{})
+	totalInAsset := make(map[protos.Asset]map[int64]struct{})
 
 	for txInIndex, txIn := range tx.MsgTx().TxIn {
 		// Ensure the referenced input transaction is available.
@@ -353,21 +361,21 @@ func CheckTransactionInputs(tx *asiutil.Tx, txHeight int32, utxoView ainterface.
 			return 0, nil, errors.New(str)
 		}
 
-		if !utxo.Assets().IsIndivisible() {
-			if _, ok := totalInCoin[*utxo.Assets()]; ok {
-				totalInCoin[*utxo.Assets()] += utxo.Amount()
+		if !utxo.Asset().IsIndivisible() {
+			if _, ok := totalInCoin[*utxo.Asset()]; ok {
+				totalInCoin[*utxo.Asset()] += utxo.Amount()
 			} else {
-				totalInCoin[*utxo.Assets()] = utxo.Amount()
+				totalInCoin[*utxo.Asset()] = utxo.Amount()
 			}
 
 		} else {
-			if _, ok := totalInAsset[*utxo.Assets()]; !ok {
-				totalInAsset[*utxo.Assets()] = make(map[int64]struct{})
+			if _, ok := totalInAsset[*utxo.Asset()]; !ok {
+				totalInAsset[*utxo.Asset()] = make(map[int64]struct{})
 			}
 
-			assetInfo := totalInAsset[*utxo.Assets()]
+			assetInfo := totalInAsset[*utxo.Asset()]
 			if _, ok := assetInfo[utxo.Amount()]; ok {
-				str := fmt.Sprintf("duplicated input asset no %v asset type of %v", utxo.Amount(), utxo.Assets())
+				str := fmt.Sprintf("duplicated input asset no %v asset type of %v", utxo.Amount(), utxo.Asset())
 				return 0, nil, errors.New(str)
 
 			} else {
@@ -376,8 +384,8 @@ func CheckTransactionInputs(tx *asiutil.Tx, txHeight int32, utxoView ainterface.
 		}
 	}
 
-	totalOutCoin := make(map[protos.Assets]int64)
-	totalOutAsset := make(map[protos.Assets]map[int64]struct{})
+	totalOutCoin := make(map[protos.Asset]int64)
+	totalOutAsset := make(map[protos.Asset]map[int64]struct{})
 
 	for outIdx, txOut := range tx.MsgTx().TxOut {
 
@@ -386,21 +394,21 @@ func CheckTransactionInputs(tx *asiutil.Tx, txHeight int32, utxoView ainterface.
 			return 0, nil, errors.New(str)
 		}
 
-		if !txOut.Assets.IsIndivisible() {
-			if _, ok := totalOutCoin[txOut.Assets]; ok {
-				totalOutCoin[txOut.Assets] += txOut.Value
+		if !txOut.Asset.IsIndivisible() {
+			if _, ok := totalOutCoin[txOut.Asset]; ok {
+				totalOutCoin[txOut.Asset] += txOut.Value
 			} else {
-				totalOutCoin[txOut.Assets] = txOut.Value
+				totalOutCoin[txOut.Asset] = txOut.Value
 			}
 
 		} else {
-			if _, ok := totalOutAsset[txOut.Assets]; !ok {
-				totalOutAsset[txOut.Assets] = make(map[int64]struct{})
+			if _, ok := totalOutAsset[txOut.Asset]; !ok {
+				totalOutAsset[txOut.Asset] = make(map[int64]struct{})
 			}
 
-			assetInfo := totalOutAsset[txOut.Assets]
+			assetInfo := totalOutAsset[txOut.Asset]
 			if _, ok := assetInfo[txOut.Value]; ok {
-				str := fmt.Sprintf("duplicated out asset no %v asset type of %v", txOut.Value, txOut.Assets)
+				str := fmt.Sprintf("duplicated out asset no %v asset type of %v", txOut.Value, txOut.Asset)
 				return 0, nil, errors.New(str)
 
 			} else {
@@ -438,7 +446,7 @@ func CheckTransactionInputs(tx *asiutil.Tx, txHeight int32, utxoView ainterface.
 		}
 	}
 
-	fees := make(map[protos.Assets]int64)
+	fees := make(map[protos.Asset]int64)
 	for k, out := range totalOutCoin {
 		in, ok := totalInCoin[k]
 		if !ok {
@@ -507,7 +515,7 @@ func newPoolHarness(chainParams *chaincfg.Params) (*poolHarness, []spendableOutp
 	}
 
 	// Create a new fake chain and harness bound to it.
-	chain := &fakeChain{utxos: blockchain.NewUtxoViewpoint()}
+	chain := &fakeChain{utxos: txo.NewUtxoViewpoint()}
 	harness := poolHarness{
 		signKey:     signKey,
 		payAddr:     payAddr,
@@ -519,7 +527,6 @@ func newPoolHarness(chainParams *chaincfg.Params) (*poolHarness, []spendableOutp
 			Policy: Policy{
 				MaxOrphanTxs:      5,
 				MaxOrphanTxSize:   1000,
-				MaxSigOpCostPerTx: blockchain.MaxBlockSigOpsCost,
 				MinRelayTxPrice:   1000, // 1 Xing per byte
 				MaxTxVersion:      2,
 			},
@@ -544,7 +551,7 @@ func newPoolHarness(chainParams *chaincfg.Params) (*poolHarness, []spendableOutp
 	if err != nil {
 		return nil, nil, err
 	}
-	harness.chain.utxos.AddTxOuts(coinbase, curHeight+1)
+	harness.chain.utxos.AddTxOuts(coinbase.Hash(), coinbase.MsgTx(), true, curHeight+1)
 	for i := uint32(0); i < numOutputs; i++ {
 		outputs = append(outputs, txOutToSpendableOut(coinbase, i))
 	}
@@ -567,27 +574,23 @@ type testContext struct {
 // should be reported as available by the HaveTransaction function based upon
 // the two flags and tests that condition as well.
 func testPoolMembership(tc *testContext, tx *asiutil.Tx, inOrphanPool, inTxPool bool) {
+	tc.t.Helper()
+
 	txHash := tx.Hash()
 	gotOrphanPool := tc.harness.txPool.IsOrphanInPool(txHash)
 	if inOrphanPool != gotOrphanPool {
-		_, file, line, _ := runtime.Caller(1)
-		tc.t.Fatalf("%s:%d -- IsOrphanInPool: want %v, got %v", file,
-			line, inOrphanPool, gotOrphanPool)
+		tc.t.Fatalf("IsOrphanInPool: want %v, got %v", inOrphanPool, gotOrphanPool)
 	}
 
 	gotTxPool := tc.harness.txPool.IsTransactionInPool(txHash)
 	if inTxPool != gotTxPool {
-		_, file, line, _ := runtime.Caller(1)
-		tc.t.Fatalf("%s:%d -- IsTransactionInPool: want %v, got %v",
-			file, line, inTxPool, gotTxPool)
+		tc.t.Fatalf("IsTransactionInPool: want %v, got %v", inTxPool, gotTxPool)
 	}
 
 	gotHaveTx := tc.harness.txPool.HaveTransaction(txHash)
 	wantHaveTx := inOrphanPool || inTxPool
 	if wantHaveTx != gotHaveTx {
-		_, file, line, _ := runtime.Caller(1)
-		tc.t.Fatalf("%s:%d -- HaveTransaction: want %v, got %v", file,
-			line, wantHaveTx, gotHaveTx)
+		tc.t.Fatalf("HaveTransaction: want %v, got %v", wantHaveTx, gotHaveTx)
 	}
 }
 
@@ -823,7 +826,7 @@ func TestBasicOrphanRemoval(t *testing.T) {
 	nonChainedOrphanTx, err := harness.CreateSignedTx([]spendableOutput{{
 		amount:   common.Amount(5000000000),
 		outPoint: protos.OutPoint{Hash: common.Hash{}, Index: 0},
-	}}, 1)
+	}}, 1, 0)
 	if err != nil {
 		t.Fatalf("unable to create signed tx: %v", err)
 	}
@@ -959,7 +962,7 @@ func TestMultiInputOrphanDoubleSpend(t *testing.T) {
 	doubleSpendTx, err := harness.CreateSignedTx([]spendableOutput{
 		txOutToSpendableOut(chainedTxns[1], 0),
 		txOutToSpendableOut(chainedTxns[maxOrphans], 0),
-	}, 1)
+	}, 1, 0)
 	if err != nil {
 		t.Fatalf("unable to create signed tx: %v", err)
 	}
@@ -1032,13 +1035,698 @@ func TestSigPool(t *testing.T) {
 			t.Error("ProcessSig error: ", err)
 		}
 
-		fetchSign, err := sigPool.FetchSignature(sigArray[i-1].Hash())
+		fetchSign, _, err := sigPool.FetchSignature(sigArray[i-1].Hash())
 		if err != nil {
 			t.Error("FetchSignature error: ", err)
 			return
 		}
 		if fetchSign.Hash() != blockSign.Hash() {
 			t.Error("FetchSignature height error: ")
+		}
+	}
+}
+
+// addCoinbaseTx adds a spendable coinbase transaction to the test context's
+// mock chain.
+func (ctx *testContext) addCoinbaseTx(numOutputs uint32) *asiutil.Tx {
+	ctx.t.Helper()
+
+	coinbaseHeight := ctx.harness.chain.BestHeight() + 1
+	coinbase, err := ctx.harness.CreateCoinbaseTx(coinbaseHeight, numOutputs)
+	if err != nil {
+		ctx.t.Fatalf("unable to create coinbase: %v", err)
+	}
+
+	ctx.harness.chain.utxos.AddTxOuts(coinbase.Hash(), coinbase.MsgTx(), true, coinbaseHeight)
+	maturity := int32(ctx.harness.chainParams.CoinbaseMaturity)
+	ctx.harness.chain.SetHeight(coinbaseHeight + maturity)
+	ctx.harness.chain.SetMedianTimePast(time.Now())
+
+	return coinbase
+}
+
+// addSignedTx creates a transaction that spends the inputs with the given fee.
+// It can be added to the test context's mempool or mock chain based on the
+// confirmed boolean.
+func (ctx *testContext) addSignedTx(inputs []spendableOutput,
+	numOutputs uint32, fee common.Amount, confirmed bool) *asiutil.Tx {
+
+	ctx.t.Helper()
+
+	tx, err := ctx.harness.CreateSignedTx(inputs, numOutputs, fee)
+	if err != nil {
+		ctx.t.Fatalf("unable to create transaction: %v", err)
+	}
+
+	if confirmed {
+		newHeight := ctx.harness.chain.BestHeight() + 1
+		ctx.harness.chain.utxos.AddTxOuts(tx.Hash(), tx.MsgTx(), false, newHeight)
+		ctx.harness.chain.SetHeight(newHeight)
+		ctx.harness.chain.SetMedianTimePast(time.Now())
+	} else {
+		acceptedTxns, err := ctx.harness.txPool.ProcessTransaction(
+			tx, true, false, 0,
+		)
+		if err != nil {
+			ctx.t.Fatalf("unable to process transaction: %v", err)
+		}
+		if len(acceptedTxns) != 1 {
+			ctx.t.Fatalf("expected one accepted transaction, got %d",
+				len(acceptedTxns))
+		}
+		testPoolMembership(ctx, tx, false, true)
+	}
+
+	return tx
+}
+
+
+// TestCheckPoolDoubleSpend ensures that the mempool can properly detect
+// unconfirmed double spends in the case of replacement and non-replacement
+// transactions.
+func TestCheckPoolDoubleSpend(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name          string
+		setup         func(ctx *testContext) *asiutil.Tx
+		isReplacement bool
+	}{
+		{
+			// Transactions that double spend inputs and signal
+			// replacement are invalid if the mempool's policy
+			// rejects replacements.
+			name: "reject replacement policy",
+			setup: func(ctx *testContext) *asiutil.Tx {
+				// Set the mempool's policy to reject
+				// replacements. Even if we have a transaction
+				// that spends inputs that signal replacement,
+				// it should still be rejected.
+				ctx.harness.txPool.cfg.Policy.RejectReplacement = true
+
+				coinbase := ctx.addCoinbaseTx(1)
+
+				// Create a replaceable parent that spends the
+				// coinbase output.
+				coinbaseOut := txOutToSpendableOut(coinbase, 0)
+				outs := []spendableOutput{coinbaseOut}
+				parent := ctx.addSignedTx(outs, 1, DefaultInputFee, false)
+
+				parentOut := txOutToSpendableOut(parent, 0)
+				outs = []spendableOutput{parentOut}
+				ctx.addSignedTx(outs, 1, DefaultInputFee,  false)
+
+				// Create another transaction that spends the
+				// same coinbase output. Since the original
+				// spender of this output, all of its spends
+				// should also be conflicts.
+				outs = []spendableOutput{coinbaseOut}
+				tx, err := ctx.harness.CreateSignedTx(outs, 2, DefaultInputFee)
+				if err != nil {
+					ctx.t.Fatalf("unable to create "+
+						"transaction: %v", err)
+				}
+
+				return tx
+			},
+			isReplacement: false,
+		},
+		{
+			// Transactions that double spend inputs and signal
+			// replacement are invalid if the mempool's policy
+			// rejects replacements.
+			name: "reject replacement policy is false",
+			setup: func(ctx *testContext) *asiutil.Tx {
+				coinbase := ctx.addCoinbaseTx(1)
+
+				// Create a replaceable parent that spends the
+				// coinbase output.
+				coinbaseOut := txOutToSpendableOut(coinbase, 0)
+				outs := []spendableOutput{coinbaseOut}
+				parent := ctx.addSignedTx(outs, 1, DefaultInputFee, false)
+
+				parentOut := txOutToSpendableOut(parent, 0)
+				outs = []spendableOutput{parentOut}
+				ctx.addSignedTx(outs, 1, DefaultInputFee, false)
+
+				// Create another transaction that spends the
+				// same coinbase output. Since the original
+				// spender of this output, all of its spends
+				// should also be conflicts.
+				outs = []spendableOutput{coinbaseOut}
+				tx, err := ctx.harness.CreateSignedTx(outs, 2, DefaultInputFee)
+				if err != nil {
+					ctx.t.Fatalf("unable to create "+
+						"transaction: %v", err)
+				}
+
+				return tx
+			},
+			isReplacement: true,
+		},
+	}
+
+	for _, testCase := range testCases {
+		success := t.Run(testCase.name, func(t *testing.T) {
+			// We'll start each test by creating our mempool
+			// harness.
+			harness, _, err := newPoolHarness(&chaincfg.MainNetParams)
+			if err != nil {
+				t.Fatalf("unable to create test pool: %v", err)
+			}
+			ctx := &testContext{t, harness}
+
+			// Each test includes a setup method, which will set up
+			// its required dependencies. The transaction returned
+			// is the one we'll be querying for the expected
+			// conflicts.
+			tx := testCase.setup(ctx)
+
+			// Ensure that the mempool properly detected the double
+			// spend unless this is a replacement transaction.
+			isReplacement, err :=
+				ctx.harness.txPool.checkPoolDoubleSpend(tx)
+			if testCase.isReplacement && err != nil {
+				t.Fatalf("expected no error for replacement "+
+					"transaction, got: %v", err)
+			}
+			if isReplacement && !testCase.isReplacement {
+				t.Fatalf("expected replacement transaction")
+			}
+			if !isReplacement && testCase.isReplacement {
+				t.Fatalf("expected non-replacement transaction")
+			}
+		})
+		if !success {
+			break
+		}
+	}
+}
+
+// TestConflicts ensures that the mempool can properly detect conflicts when
+// processing new incoming transactions.
+func TestConflicts(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name string
+
+		// setup sets up the required dependencies for each test. It
+		// returns the transaction we'll check for conflicts and its
+		// expected unique conflicts.
+		setup func(ctx *testContext) (*asiutil.Tx, []*asiutil.Tx)
+	}{
+		{
+			// Create a transaction that would introduce no
+			// conflicts in the mempool. This is done by not
+			// spending any outputs that are currently being spent
+			// within the mempool.
+			name: "no conflicts",
+			setup: func(ctx *testContext) (*asiutil.Tx, []*asiutil.Tx) {
+				coinbase := ctx.addCoinbaseTx(1)
+
+				coinbaseOut := txOutToSpendableOut(coinbase, 0)
+				outs := []spendableOutput{coinbaseOut}
+				parent := ctx.addSignedTx(outs, 1, DefaultInputFee, false)
+
+				parentOut := txOutToSpendableOut(parent, 0)
+				outs = []spendableOutput{parentOut}
+				tx, err := ctx.harness.CreateSignedTx(outs, 2, DefaultInputFee)
+				if err != nil {
+					ctx.t.Fatalf("unable to create "+
+						"transaction: %v", err)
+				}
+
+				return tx, nil
+			},
+		},
+		{
+			// Create a transaction that would introduce two
+			// conflicts in the mempool by spending two outputs
+			// which are each already being spent by a different
+			// transaction within the mempool.
+			name: "conflicts",
+			setup: func(ctx *testContext) (*asiutil.Tx, []*asiutil.Tx) {
+				coinbase1 := ctx.addCoinbaseTx(1)
+				coinbaseOut1 := txOutToSpendableOut(coinbase1, 0)
+				outs := []spendableOutput{coinbaseOut1}
+				conflict1 := ctx.addSignedTx(
+					outs, 1, DefaultInputFee, false,
+				)
+
+				coinbase2 := ctx.addCoinbaseTx(1)
+				coinbaseOut2 := txOutToSpendableOut(coinbase2, 0)
+				outs = []spendableOutput{coinbaseOut2}
+				conflict2 := ctx.addSignedTx(
+					outs, 1, DefaultInputFee, false,
+				)
+
+				// Create a transaction that spends both
+				// coinbase outputs that were spent above.
+				outs = []spendableOutput{coinbaseOut1, coinbaseOut2}
+				tx, err := ctx.harness.CreateSignedTx(outs, 1, DefaultInputFee)
+				if err != nil {
+					ctx.t.Fatalf("unable to create "+
+						"transaction: %v", err)
+				}
+
+				return tx, []*asiutil.Tx{conflict1, conflict2}
+			},
+		},
+		{
+			// Create a transaction that would introduce two
+			// conflicts in the mempool by spending an output
+			// already being spent in the mempool by a different
+			// transaction. The second conflict stems from spending
+			// the transaction that spends the original spender of
+			// the output, i.e., a descendant of the original
+			// spender.
+			name: "descendant conflicts",
+			setup: func(ctx *testContext) (*asiutil.Tx, []*asiutil.Tx) {
+				coinbase := ctx.addCoinbaseTx(1)
+
+				// Create a replaceable parent that spends the
+				// coinbase output.
+				coinbaseOut := txOutToSpendableOut(coinbase, 0)
+				outs := []spendableOutput{coinbaseOut}
+				parent := ctx.addSignedTx(outs, 1, DefaultInputFee, false)
+
+				parentOut := txOutToSpendableOut(parent, 0)
+				outs = []spendableOutput{parentOut}
+				child := ctx.addSignedTx(outs, 1, DefaultInputFee, false)
+
+				// Create another transaction that spends the
+				// same coinbase output. Since the original
+				// spender of this output has descendants, they
+				// should also be conflicts.
+				outs = []spendableOutput{coinbaseOut}
+				tx, err := ctx.harness.CreateSignedTx(outs, 2, DefaultInputFee)
+				if err != nil {
+					ctx.t.Fatalf("unable to create "+
+						"transaction: %v", err)
+				}
+
+				return tx, []*asiutil.Tx{parent, child}
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		success := t.Run(testCase.name, func(t *testing.T) {
+			// We'll start each test by creating our mempool
+			// harness.
+			harness, _, err := newPoolHarness(&chaincfg.MainNetParams)
+			if err != nil {
+				t.Fatalf("unable to create test pool: %v", err)
+			}
+			ctx := &testContext{t, harness}
+
+			// Each test includes a setup method, which will set up
+			// its required dependencies. The transaction returned
+			// is the one we'll be querying for the expected
+			// conflicts.
+			tx, conflicts := testCase.setup(ctx)
+
+			// Assert the expected conflicts are returned.
+			txConflicts := ctx.harness.txPool.txConflicts(tx)
+			if len(txConflicts) != len(conflicts) {
+				ctx.t.Fatalf("expected %d conflicts, got %d",
+					len(conflicts), len(txConflicts))
+			}
+			for _, conflict := range conflicts {
+				conflictHash := *conflict.Hash()
+				if _, ok := txConflicts[conflictHash]; !ok {
+					ctx.t.Fatalf("expected %v to be found "+
+						"as a conflict", conflictHash)
+				}
+			}
+		})
+		if !success {
+			break
+		}
+	}
+}
+
+// TestAncestorsDescendants ensures that we can properly retrieve the
+// unconfirmed ancestors and descendants of a transaction.
+func TestAncestorsDescendants(t *testing.T) {
+	t.Parallel()
+
+	// We'll start the test by initializing our mempool harness.
+	harness, outputs, err := newPoolHarness(&chaincfg.MainNetParams)
+	if err != nil {
+		t.Fatalf("unable to create test pool: %v", err)
+	}
+	ctx := &testContext{t, harness}
+
+	// We'll be creating the following chain of unconfirmed transactions:
+	//
+	//       B ----
+	//     /        \
+	//   A            E
+	//     \        /
+	//       C -- D
+	//
+	// where B and C spend A, D spends C, and E spends B and D. We set up a
+	// chain like so to properly detect ancestors and descendants past a
+	// single parent/child.
+	aInputs := outputs[:1]
+	a := ctx.addSignedTx(aInputs, 2, DefaultInputFee, false)
+
+	bInputs := []spendableOutput{txOutToSpendableOut(a, 0)}
+	b := ctx.addSignedTx(bInputs, 1, DefaultInputFee,  false)
+
+	cInputs := []spendableOutput{txOutToSpendableOut(a, 1)}
+	c := ctx.addSignedTx(cInputs, 1, DefaultInputFee, false)
+
+	dInputs := []spendableOutput{txOutToSpendableOut(c, 0)}
+	d := ctx.addSignedTx(dInputs, 1, DefaultInputFee, false)
+
+	eInputs := []spendableOutput{
+		txOutToSpendableOut(b, 0), txOutToSpendableOut(d, 0),
+	}
+	e := ctx.addSignedTx(eInputs, 1, DefaultInputFee, false)
+
+	// We'll be querying for the ancestors of E. We should expect to see all
+	// of the transactions that it depends on.
+	expectedAncestors := map[common.Hash]struct{}{
+		*a.Hash(): struct{}{}, *b.Hash(): struct{}{},
+		*c.Hash(): struct{}{}, *d.Hash(): struct{}{},
+	}
+	ancestors := ctx.harness.txPool.txAncestors(e, nil)
+	if len(ancestors) != len(expectedAncestors) {
+		ctx.t.Fatalf("expected %d ancestors, got %d",
+			len(expectedAncestors), len(ancestors))
+	}
+	for ancestorHash := range ancestors {
+		if _, ok := expectedAncestors[ancestorHash]; !ok {
+			ctx.t.Fatalf("found unexpected ancestor %v",
+				ancestorHash)
+		}
+	}
+
+	// Then, we'll query for the descendants of A. We should expect to see
+	// all of the transactions that depend on it.
+	expectedDescendants := map[common.Hash]struct{}{
+		*b.Hash(): struct{}{}, *c.Hash(): struct{}{},
+		*d.Hash(): struct{}{}, *e.Hash(): struct{}{},
+	}
+	descendants := ctx.harness.txPool.txDescendants(a, nil)
+	if len(descendants) != len(expectedDescendants) {
+		ctx.t.Fatalf("expected %d descendants, got %d",
+			len(expectedDescendants), len(descendants))
+	}
+	for descendantHash := range descendants {
+		if _, ok := expectedDescendants[descendantHash]; !ok {
+			ctx.t.Fatalf("found unexpected descendant %v",
+				descendantHash)
+		}
+	}
+}
+
+
+// TestRBP tests the different cases required for a transaction to properly
+// replace its conflicts given that they all signal replacement.
+func TestRBP(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name  string
+		setup func(ctx *testContext) (*asiutil.Tx, []*asiutil.Tx)
+		err   string
+	}{
+		{
+			// A transaction cannot replace another if we don't
+			// allow accepting replacement transactions.
+			name: "reject replacement policy",
+			setup: func(ctx *testContext) (*asiutil.Tx, []*asiutil.Tx) {
+				ctx.harness.txPool.cfg.Policy.RejectReplacement = true
+
+				coinbase := ctx.addCoinbaseTx(1)
+
+				// Create a transaction that spends the coinbase
+				// output and doesn't signal for replacement.
+				coinbaseOut := txOutToSpendableOut(coinbase, 0)
+				outs := []spendableOutput{coinbaseOut}
+				ctx.addSignedTx(outs, 1, DefaultInputFee, false)
+
+				// Attempting to create another transaction that
+				// spends the same output should fail since the
+				// original transaction spending it doesn't
+				// signal replacement.
+				tx, err := ctx.harness.CreateSignedTx(outs, 2, DefaultInputFee)
+				if err != nil {
+					ctx.t.Fatalf("unable to create "+
+						"transaction: %v", err)
+				}
+
+				return tx, nil
+			},
+			err: "already spent by transaction",
+		},
+		{
+			// A transaction cannot replace another if doing so
+			// would cause more than 100 transactions being
+			// replaced.
+			name: "exceeds maximum conflicts",
+			setup: func(ctx *testContext) (*asiutil.Tx, []*asiutil.Tx) {
+				const numDescendants = 100
+				coinbaseOuts := make(
+				[]spendableOutput, numDescendants,
+				)
+				for i := 0; i < numDescendants; i++ {
+					tx := ctx.addCoinbaseTx(1)
+					coinbaseOuts[i] = txOutToSpendableOut(tx, 0)
+				}
+				parent := ctx.addSignedTx(
+					coinbaseOuts, numDescendants,
+					DefaultInputFee, false,
+				)
+
+				// We'll then spend each output of the parent
+				// transaction with a distinct transaction.
+				for i := uint32(0); i < numDescendants; i++ {
+					out := txOutToSpendableOut(parent, i)
+					outs := []spendableOutput{out}
+					ctx.addSignedTx(
+						outs, 1, DefaultInputFee, false,
+					)
+				}
+
+				// We'll then create a replacement transaction
+				// by spending one of the coinbase outputs.
+				// Replacing the original spender of the
+				// coinbase output would evict the maximum
+				// number of transactions from the mempool,
+				// however, so we should reject it.
+				tx, err := ctx.harness.CreateSignedTx(coinbaseOuts[:1], 1, DefaultInputFee)
+				if err != nil {
+					ctx.t.Fatalf("unable to create "+
+						"transaction: %v", err)
+				}
+
+				return tx, nil
+			},
+			err: "evicts more transactions than permitted",
+		},
+		{
+			// A transaction cannot replace another if the
+			// replacement ends up spending an output that belongs
+			// to one of the transactions it replaces.
+			name: "replacement spends parent transaction",
+			setup: func(ctx *testContext) (*asiutil.Tx, []*asiutil.Tx) {
+				coinbase := ctx.addCoinbaseTx(1)
+
+				// Create a transaction that spends the coinbase
+				// output and signals replacement.
+				coinbaseOut := txOutToSpendableOut(coinbase, 0)
+				outs := []spendableOutput{coinbaseOut}
+				parent := ctx.addSignedTx(
+					outs, 1, DefaultInputFee, false,
+				)
+
+				// Attempting to create another transaction that
+				// spends it, but also replaces it, should be
+				// invalid.
+				parentOut := txOutToSpendableOut(parent, 0)
+				outs = []spendableOutput{coinbaseOut, parentOut}
+				tx, err := ctx.harness.CreateSignedTx(outs, 2, DefaultInputFee)
+				if err != nil {
+					ctx.t.Fatalf("unable to create "+
+						"transaction: %v", err)
+				}
+
+				return tx, nil
+			},
+			err: "spends parent transaction",
+		},
+		{
+			// A transaction cannot replace another if it has a
+			// lower gasPrice than any of the transactions it
+			// intends to replace.
+			name: "insufficient fee rate",
+			setup: func(ctx *testContext) (*asiutil.Tx, []*asiutil.Tx) {
+				coinbase1 := ctx.addCoinbaseTx(1)
+				coinbase2 := ctx.addCoinbaseTx(1)
+
+				// We'll create two transactions that each spend
+				// one of the coinbase outputs. The first will
+				// have a higher fee rate than the second.
+				coinbaseOut1 := txOutToSpendableOut(coinbase1, 0)
+				outs := []spendableOutput{coinbaseOut1}
+				ctx.addSignedTx(outs, 1, DefaultInputFee*2, false)
+
+				coinbaseOut2 := txOutToSpendableOut(coinbase2, 0)
+				outs = []spendableOutput{coinbaseOut2}
+				ctx.addSignedTx(outs, 1, DefaultInputFee, false)
+
+				// We'll then create the replacement transaction
+				// by spending the coinbase outputs. It will be
+				// an invalid one however, since it won't have a
+				// higher fee rate than the first transaction.
+				outs = []spendableOutput{coinbaseOut1, coinbaseOut2}
+				tx, err := ctx.harness.CreateSignedTx(outs, 1, DefaultInputFee*2)
+				if err != nil {
+					ctx.t.Fatalf("unable to create "+
+						"transaction: %v", err)
+				}
+
+				return tx, nil
+			},
+			err: "insufficient gasPrice",
+		},
+		{
+			// A transaction cannot replace another if it introduces
+			// a new unconfirmed input that was not already in any
+			// of the transactions it's directly replacing.
+			name: "spends new unconfirmed input",
+			setup: func(ctx *testContext) (*asiutil.Tx, []*asiutil.Tx) {
+				coinbase1 := ctx.addCoinbaseTx(1)
+				coinbase2 := ctx.addCoinbaseTx(1)
+
+				// We'll create two unconfirmed transactions
+				// from our coinbase transactions.
+				coinbaseOut1 := txOutToSpendableOut(coinbase1, 0)
+				outs := []spendableOutput{coinbaseOut1}
+				ctx.addSignedTx(outs, 1, DefaultInputFee, false)
+
+				coinbaseOut2 := txOutToSpendableOut(coinbase2, 0)
+				outs = []spendableOutput{coinbaseOut2}
+				newTx := ctx.addSignedTx(
+					outs, 1, DefaultInputFee, false,
+				)
+
+				// We should not be able to accept a replacement
+				// transaction that spends an unconfirmed input
+				// that was not previously included.
+				newTxOut := txOutToSpendableOut(newTx, 0)
+				outs = []spendableOutput{coinbaseOut1, newTxOut}
+				tx, err := ctx.harness.CreateSignedTx(
+					outs, 1, DefaultInputFee*2)
+				if err != nil {
+					ctx.t.Fatalf("unable to create "+
+						"transaction: %v", err)
+				}
+
+				return tx, nil
+			},
+			err: "spends new unconfirmed input",
+		},
+		{
+			// A transaction can replace another with a higher gasPrice.
+			name: "higher gasPrice",
+			setup: func(ctx *testContext) (*asiutil.Tx, []*asiutil.Tx) {
+				coinbase := ctx.addCoinbaseTx(1)
+
+				// Create a transaction that we'll directly
+				// replace.
+				coinbaseOut := txOutToSpendableOut(coinbase, 0)
+				outs := []spendableOutput{coinbaseOut}
+				parent := ctx.addSignedTx(
+					outs, 1, DefaultInputFee, false,
+				)
+
+				// Spend the parent transaction to create a
+				// descendant that will be indirectly replaced.
+				parentOut := txOutToSpendableOut(parent, 0)
+				outs = []spendableOutput{parentOut}
+				child := ctx.addSignedTx(
+					outs, 1, DefaultInputFee, false,
+				)
+
+				// The replacement transaction should replace
+				// both transactions above since it has a higher
+				// gasPrice and doesn't violate any other conditions
+				// within the RBP policy.
+				outs = []spendableOutput{coinbaseOut}
+				tx, err := ctx.harness.CreateSignedTx(outs, 1, DefaultInputFee*3)
+				if err != nil {
+					ctx.t.Fatalf("unable to create "+
+						"transaction: %v", err)
+				}
+
+				return tx, []*asiutil.Tx{parent, child}
+			},
+			err: "",
+		},
+	}
+
+	for _, testCase := range testCases {
+		success := t.Run(testCase.name, func(t *testing.T) {
+			// We'll start each test by creating our mempool
+			// harness.
+			harness, _, err := newPoolHarness(&chaincfg.MainNetParams)
+			if err != nil {
+				t.Fatalf("unable to create test pool: %v", err)
+			}
+
+			//// We'll enable relay priority to ensure we can properly
+			//// test fees between replacement transactions and the
+			//// transactions it replaces.
+			//harness.txPool.cfg.Policy.DisableRelayPriority = false
+
+			// Each test includes a setup method, which will set up
+			// its required dependencies. The transaction returned
+			// is the intended replacement, which should replace the
+			// expected list of transactions.
+			ctx := &testContext{t, harness}
+			replacementTx, replacedTxs := testCase.setup(ctx)
+
+			// Attempt to process the replacement transaction. If
+			// it's not a valid one, we should see the error
+			// expected by the test.
+			_, err = ctx.harness.txPool.ProcessTransaction(
+				replacementTx, false, false, 0,
+			)
+			if testCase.err == "" && err != nil {
+				ctx.t.Fatalf("expected no error when "+
+					"processing replacement transaction, "+
+					"got: %v", err)
+			}
+			if testCase.err != "" && err == nil {
+				ctx.t.Fatalf("expected error when processing "+
+					"replacement transaction: %v",
+					testCase.err)
+			}
+			if testCase.err != "" && err != nil {
+				if !strings.Contains(err.Error(), testCase.err) {
+					ctx.t.Fatalf("expected error: %v\n"+
+						"got: %v", testCase.err, err)
+				}
+			}
+
+			// If the replacement transaction is valid, we'll check
+			// that it has been included in the mempool and its
+			// conflicts have been removed. Otherwise, the conflicts
+			// should remain in the mempool.
+			valid := testCase.err == ""
+			for _, tx := range replacedTxs {
+				testPoolMembership(ctx, tx, false, !valid)
+			}
+			testPoolMembership(ctx, replacementTx, false, valid)
+		})
+		if !success {
+			break
 		}
 	}
 }

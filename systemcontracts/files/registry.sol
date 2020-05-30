@@ -113,7 +113,7 @@ contract RegistryCenter {
      */
     function registerOrganization(string organizationName, string templateName) public returns(uint32) {
         require(bytes(organizationName).length > 0, "invalid organization name");
-        require(bytes(templateName).length > 0, "invalid template name");
+        require(bytes(templateName).length > 0 && bytes(templateName).length <= 128, "invalid template name");
         require(!organizationNameMap[organizationName], "organization name already existed");
 
         lastOrganizationIdAssigned = SafeMath.addUint32(lastOrganizationIdAssigned, 1);
@@ -189,7 +189,6 @@ contract RegistryCenter {
         OrganizationInfo storage orgInfo = organizationIdInfoMap[organizationId];
         require(orgInfo.registered, "organization has not registered");
 
-        orgInfo.active = false;
         orgInfo.registered = false;
         organizationNameMap[orgInfo.organizationName] = false;
 
@@ -375,36 +374,6 @@ contract RegistryCenter {
     }
 
     /**
-     * @dev check whether an asset can be transferred
-     *
-     * @param organizationId the organization Id
-     * @param assetIndex asset index of an organization, which is maintained by the organization itself
-     * @return yes or no
-     */
-    function canTransfer(uint32 organizationId, uint32 assetIndex) public view returns (bool) {
-        OrganizationInfo storage orgInfo = organizationIdInfoMap[organizationId];
-        if (!orgInfo.registered || !orgInfo.active) {
-            return false;
-        }
-        uint64 assetId = generateAssetID(organizationId, assetIndex);
-        if (!assetIdInfoMap[assetId].existed) {
-            return false;
-        }
-
-        TemplateInfo storage tInfo = templateNameInfoMap[orgInfo.templateName];
-        if (!tInfo.registered) {
-            return false;
-        }
-
-        uint templateBlockHeight = tInfo.blockHeight;
-        uint orgBlockHeight = orgInfo.blockHeight;
-        if (!tInfo.active && templateBlockHeight > orgBlockHeight) {
-            return false;
-        }
-        return true;
-    }
-
-    /**
      * @dev check whether the asset is restricted for circulation
      *
      * @param organizationId the organization Id
@@ -412,10 +381,6 @@ contract RegistryCenter {
      * @return yes or no
      */
     function isRestrictedAsset(uint32 organizationId, uint32 assetIndex) public view returns(bool, bool) {
-        OrganizationInfo storage orgInfo = organizationIdInfoMap[organizationId];
-        if (!orgInfo.registered) {
-            return (false, false);
-        }
         AssetInfo storage assetInfo = assetIdInfoMap[generateAssetID(organizationId, assetIndex)];
         if (!assetInfo.existed) {
             return (false, false);
@@ -447,29 +412,33 @@ contract RegistryCenter {
     }
 
     /**
-     * @dev check whether an restricted asset can be transferred
+     * @dev get organization address by organization id
      *
      * @param organizationId the organization Id
      * @param assetIndex asset index of an organization, which is maintained by the organization itself
-     * @param transferAddress the address to transfer to
-     * @return yes or no
+     * @return organization address
      */
-    function canTransferRestrictedAsset(uint32 organizationId, uint32 assetIndex, address transferAddress)
+    function getOrganizationAddressById(uint32 organizationId, uint32 assetIndex)
         public
         view
-        returns(bool)
+        returns(address)
     {
         OrganizationInfo storage orgInfo = organizationIdInfoMap[organizationId];
-        if (!orgInfo.registered || !orgInfo.active) {
-            return false;
-        }
-        uint64 assetId = generateAssetID(organizationId, assetIndex);
-        if (!assetIdInfoMap[assetId].existed) {
-            return false;
+        if (!orgInfo.active) {
+            return 0x0;
         }
 
-        Organization organization = Organization(orgInfo.organizationContract);
-        return organization.canTransfer(transferAddress, assetIndex);
+        uint64 assetId = generateAssetID(organizationId, assetIndex);
+        if (!assetIdInfoMap[assetId].existed) {
+            return 0x0;
+        }
+
+        TemplateInfo storage tInfo = templateNameInfoMap[orgInfo.templateName];
+        if (!tInfo.registered || !tInfo.active) {
+            return 0x0;
+        }
+
+        return orgInfo.organizationContract;
     }
 
     /**
