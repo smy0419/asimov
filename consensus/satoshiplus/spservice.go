@@ -220,7 +220,7 @@ func (s *SPService) resetRoundInterval() bool {
 // when the it turns to be a validator, try to generate a new block
 func (s *SPService) handleBlockTimeout() {
 	round, slot, _, _ := s.getRoundInfo(s.context.RoundStartTime, s.context.Round, time.Now().Unix())
-	if round > s.context.Round {
+	if round > s.context.Round || slot >= int64(chaincfg.ActiveNetParams.RoundSize) {
 		return
 	}
 	s.context.Slot = slot
@@ -258,7 +258,7 @@ func (s *SPService) handleNewBlock(chainTip ainterface.BlockNode) {
 
 func (s *SPService) tryMineNextBlock()  {
 	slot, round := s.context.Slot + 1, s.context.Round
-	if slot == int64(chaincfg.ActiveNetParams.RoundSize) {
+	if slot >= int64(chaincfg.ActiveNetParams.RoundSize) {
 		return
 	}
 	_, slotStd, _, _ := s.getRoundInfo(s.context.RoundStartTime, s.context.Round, time.Now().Unix())
