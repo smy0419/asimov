@@ -239,8 +239,8 @@ func (s *SPService) handleRoundTimeout() {
 	// round control
 	s.context.Slot = 0
 	s.context.Round = s.context.Round + 1
-	s.resetRoundInterval()
 	s.context.RoundStartTime = s.context.RoundStartTime + s.context.RoundInterval
+	s.resetRoundInterval()
 	isTurn := s.checkTurn(0, s.context.Round, true)
 	s.resetTimer(true, true)
 	if !isTurn {
