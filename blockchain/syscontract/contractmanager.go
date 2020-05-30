@@ -12,6 +12,7 @@ import (
 	"github.com/AsimovNetwork/asimov/common"
 	"github.com/AsimovNetwork/asimov/protos"
 	"github.com/AsimovNetwork/asimov/vm/fvm"
+	"github.com/AsimovNetwork/asimov/vm/fvm/core/vm"
 	"sync"
 )
 
@@ -26,7 +27,7 @@ type Manager struct {
 	// unrestricted assets cache
 	assetsUnrestrictedMtx   sync.Mutex
 	assetsUnrestrictedCache map[protos.Asset]struct{}
-	assetsUnrestrictedBlockCache map[int32][]protos.Asset
+	checkLimit  func(block *asiutil.Block, stateDB vm.StateDB, asset *protos.Asset) int
 }
 
 // Init manager by genesis data.
@@ -38,10 +39,8 @@ func (m *Manager) Init(chain fvm.ChainContext, dataBytes [] byte) error {
 	}
 	m.chain = chain
 	m.genesisDataCache = cMap
-	m.assetsUnrestrictedCache = map[protos.Asset]struct{}{
-		asiutil.AsimovAsset:struct{}{},
-	}
-	m.assetsUnrestrictedBlockCache = make(map[int32][]protos.Asset)
+	m.assetsUnrestrictedCache = make(map[protos.Asset]struct{})
+	m.checkLimit = m.isLimit
 	return nil
 }
 
