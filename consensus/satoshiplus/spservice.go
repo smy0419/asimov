@@ -72,8 +72,8 @@ func (s *SPService) Start() error {
 	log.Info("satoshiplus consensus start")
 
 	// current block maybe do not at the best block height:
-	s.blockTimer = time.NewTimer(common.DefaultBlockInterval * 1000000)
-	s.roundTimer = time.NewTimer(common.DefaultBlockInterval * 1000000)
+	s.blockTimer = time.NewTimer(time.Hour)
+	s.roundTimer = time.NewTimer(time.Hour)
 	if err := s.initializeConsensus(); err != nil {
 		log.Errorf("Start satoshi service failed:", err)
 		s.blockTimer.Stop()
