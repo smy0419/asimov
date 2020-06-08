@@ -419,24 +419,21 @@ func LoadConfig() (*FConfig, []string, error) {
 	// Load additional FConfig from file.
 	var configFileError error
 	parser := newConfigParser(&cfg, &serviceOpts, flags.Default)
-	if preCfg.ConfigFile != DefaultConfigFile {
+	if _, err := os.Stat(preCfg.ConfigFile); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "Check the config file %s: %v\n",
+			preCfg.ConfigFile, err)
+		return nil, nil, err
+	}
 
-		if _, err := os.Stat(preCfg.ConfigFile); err != nil {
-			fmt.Fprintf(os.Stderr, "Check the config file %s: %v\n",
-				preCfg.ConfigFile, err)
+	err = flags.NewIniParser(parser).ParseFile(preCfg.ConfigFile)
+	if err != nil {
+		if _, ok := err.(*os.PathError); !ok {
+			_, _ = fmt.Fprintf(os.Stderr, "Error parsing FConfig "+
+				"file: %v\n", err)
+			_, _ = fmt.Fprintln(os.Stderr, usageMessage)
 			return nil, nil, err
 		}
-
-		err := flags.NewIniParser(parser).ParseFile(preCfg.ConfigFile)
-		if err != nil {
-			if _, ok := err.(*os.PathError); !ok {
-				fmt.Fprintf(os.Stderr, "Error parsing FConfig "+
-					"file: %v\n", err)
-				fmt.Fprintln(os.Stderr, usageMessage)
-				return nil, nil, err
-			}
-			configFileError = err
-		}
+		configFileError = err
 	}
 
 	// Parse command line options again to ensure they take precedence.
