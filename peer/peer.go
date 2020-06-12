@@ -69,7 +69,7 @@ const (
 
 	// trickleTimeout is the duration of the ticker which trickles down the
 	// inventory to a peer.
-	trickleTimeout = 10 * time.Second
+	trickleTimeout = 1 * time.Second
 
 	// writeDeadLine is the deadline for writing the message.
 	writeDeadLine = 5 * time.Second
@@ -1056,6 +1056,12 @@ func (p *Peer) PushRejectMsg(command string, code protos.RejectCode, reason stri
 // from the remote peer.  It will return an error if the remote peer's version
 // is not compatible with ours.
 func (p *Peer) handleRemoteVersionMsg(msg *protos.MsgVersion) error {
+	// Check for messages from the wrong asimov network.
+	if msg.Magic != chaincfg.ActiveNetParams.Net {
+		reason := fmt.Sprintf("message from other network [%v]", msg.Magic)
+		return errors.New(reason)
+	}
+
 	// Detect self connections.
 	if !allowSelfConns && sentNonces.Exists(msg.Nonce) {
 		return errors.New("disconnecting peer connected to self")
@@ -1197,35 +1203,6 @@ func (p *Peer) writeMessage(msg protos.Message, enc protos.MessageEncoding) erro
 		p.cfg.Listeners.OnWrite(p, n, msg, err)
 	}
 	return err
-}
-
-// isAllowedReadError returns whether or not the passed error is allowed without
-// disconnecting the peer.  In particular, regression tests need to be allowed
-// to send malformed messages without the peer being disconnected.
-func (p *Peer) isAllowedReadError(err error) bool {
-	// Only allow read errors in regression test mode.
-	if p.cfg.ChainParams.Net != common.RegTestNet {
-		return false
-	}
-
-	// Don't allow the error if it's not specifically a malformed message error.
-	if _, ok := err.(*protos.MessageError); !ok {
-		return false
-	}
-
-	// Don't allow the error if it's not coming from localhost or the
-	// hostname can't be determined for some reason.
-	host, _, err := net.SplitHostPort(p.addr)
-	if err != nil {
-		return false
-	}
-
-	if host != "127.0.0.1" && host != "localhost" {
-		return false
-	}
-
-	// Allowed if all checks passed.
-	return true
 }
 
 // shouldHandleReadError returns whether or not the passed error, which is
@@ -1455,15 +1432,6 @@ out:
 		rmsg, buf, err := p.readMessage(p.wireEncoding)
 		idleTimer.Stop()
 		if err != nil {
-			// In order to allow regression tests with malformed messages, don't
-			// disconnect the peer when we're in regression test mode and the
-			// error is one of the allowed errors.
-			if p.isAllowedReadError(err) {
-				log.Errorf("Allowed test error from %s: %v", p, err)
-				idleTimer.Reset(idleTimeout)
-				continue
-			}
-
 			// Only logger the error and send reject message if the
 			// local peer is not forcibly disconnecting and the
 			// remote peer has not disconnected.
